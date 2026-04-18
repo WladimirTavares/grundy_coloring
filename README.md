@@ -135,7 +135,7 @@ Returns `True` if and only if every vertex $v \in C_i$ has at least one neighbou
 All three solvers implement the recurrence:
 
 $$
-\Gamma(S) = \max\left\{\, \Gamma(S \setminus X) + 1 \;\middle|\; X \subseteq S \text{ is a maximal independent set of } G[S] \right\}
+\Gamma(S) = \max \{  \Gamma(S \setminus X) + 1 \;|\; X \subseteq S \text{ is a maximal independent set of } G[S] \}
 $$
 
 They differ only in the upper-bound function used for pruning.
