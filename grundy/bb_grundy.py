@@ -1328,161 +1328,161 @@ def solver_carvalho_modificado(grafo: nx.Graph, upperbound: int, time_limit: int
     # return None, None, None, None
 
 
-def solver_carvalho_representante(grafo: nx.Graph, time_limit: int = 30000):
-    """Solve the Grundy coloring problem via the asymmetric representative model.
+# def solver_carvalho_representante(grafo: nx.Graph, time_limit: int = 30000):
+#     """Solve the Grundy coloring problem via the asymmetric representative model.
 
-    Each color class is represented by its **smallest-indexed** vertex (the
-    *representative*).  Binary variable x[u, v] = 1 means that vertex *v*
-    belongs to the color class whose representative is *u* (u ≤ v, and *u*
-    and *v* are non-adjacent).  The ordering between representatives is tracked
-    by auxiliary variables y[u, v] and linearised with potential variables pot.
+#     Each color class is represented by its **smallest-indexed** vertex (the
+#     *representative*).  Binary variable x[u, v] = 1 means that vertex *v*
+#     belongs to the color class whose representative is *u* (u ≤ v, and *u*
+#     and *v* are non-adjacent).  The ordering between representatives is tracked
+#     by auxiliary variables y[u, v] and linearised with potential variables pot.
 
-    Number of constraints: O(|V| · (|E| + |C|²))
-    Grundy property constraints: O(|V| · |C|²)
+#     Number of constraints: O(|V| · (|E| + |C|²))
+#     Grundy property constraints: O(|V| · |C|²)
 
-    Parameters
-    ----------
-    grafo : nx.Graph
-        Input graph.
-    time_limit : int, optional
-        Solver time limit in milliseconds (default 30 000).
+#     Parameters
+#     ----------
+#     grafo : nx.Graph
+#         Input graph.
+#     time_limit : int, optional
+#         Solver time limit in milliseconds (default 30 000).
 
-    Returns
-    -------
-    tuple (optimal, num_colors, C, nodes)
-        Same layout as :func:`solver_rodrigues`.
+#     Returns
+#     -------
+#     tuple (optimal, num_colors, C, nodes)
+#         Same layout as :func:`solver_rodrigues`.
 
-    References
-    ----------
-    .. [Car23] Carvalho et al. (2023), Formulation F3 (asymmetric representative).
-    """
-    solver = pywraplp.Solver.CreateSolver('SCIP')
-    solver.set_time_limit(time_limit)
+#     References
+#     ----------
+#     .. [Car23] Carvalho et al. (2023), Formulation F3 (asymmetric representative).
+#     """
+#     solver = pywraplp.Solver.CreateSolver('SCIP')
+#     solver.set_time_limit(time_limit)
 
-    n = len(grafo.nodes)
+#     n = len(grafo.nodes)
 
-    # --- Decision variables ---
-    # x[u, v] = 1  iff v is in the color class represented by u (u ≤ v, non-adjacent).
-    x = {}
-    for v in grafo.nodes:
-        for u in grafo.nodes:
-            if u not in grafo.adj[v] or u == v:
-                x[v, u] = solver.IntVar(0, 1, "x[%s,%s]" % (v, u))
+#     # --- Decision variables ---
+#     # x[u, v] = 1  iff v is in the color class represented by u (u ≤ v, non-adjacent).
+#     x = {}
+#     for v in grafo.nodes:
+#         for u in grafo.nodes:
+#             if u not in grafo.adj[v] or u == v:
+#                 x[v, u] = solver.IntVar(0, 1, "x[%s,%s]" % (v, u))
 
-    # y[u, v] = 1  iff the class of u comes *before* the class of v in the
-    #              Grundy coloring order (u ≠ v).
-    y = {}
-    for v in grafo.nodes:
-        for u in grafo.nodes:
-            if u != v:
-                y[v, u] = solver.IntVar(0, 1, "y[%s,%s]" % (v, u))
+#     # y[u, v] = 1  iff the class of u comes *before* the class of v in the
+#     #              Grundy coloring order (u ≠ v).
+#     y = {}
+#     for v in grafo.nodes:
+#         for u in grafo.nodes:
+#             if u != v:
+#                 y[v, u] = solver.IntVar(0, 1, "y[%s,%s]" % (v, u))
 
-    # pot[v]: potential used to linearise the acyclicity of the y relation.
-    pot = {}
-    for v in grafo.nodes:
-        pot[v] = solver.NumVar(0, n - 1, "pot[%d]" % v)
+#     # pot[v]: potential used to linearise the acyclicity of the y relation.
+#     pot = {}
+#     for v in grafo.nodes:
+#         pot[v] = solver.NumVar(0, n - 1, "pot[%d]" % v)
 
-    # --- Constraints ---
+#     # --- Constraints ---
 
-    # (1) Clique constraint: within the same class, any two vertices must be
-    #     non-adjacent, so u cannot simultaneously represent both v and w if
-    #     (v, w) is an edge.
-    for u in grafo.nodes:
-        for v in grafo.nodes:
-            for w in grafo.nodes:
-                if (v not in grafo.adj[u] and w not in grafo.adj[u]
-                        and (v, w) in grafo.edges
-                        and u <= v and v < w):
-                    solver.Add(x[u, v] + x[u, w] <= x[u, u])
+#     # (1) Clique constraint: within the same class, any two vertices must be
+#     #     non-adjacent, so u cannot simultaneously represent both v and w if
+#     #     (v, w) is an edge.
+#     for u in grafo.nodes:
+#         for v in grafo.nodes:
+#             for w in grafo.nodes:
+#                 if (v not in grafo.adj[u] and w not in grafo.adj[u]
+#                         and (v, w) in grafo.edges
+#                         and u <= v and v < w):
+#                     solver.Add(x[u, v] + x[u, w] <= x[u, u])
 
-    # (2) Each vertex belongs to exactly one color class.
-    for u in grafo.nodes:
-        solver.Add(
-            solver.Sum(
-                x[v, u] for v in grafo.nodes
-                if v not in grafo.adj[u] and v <= u
-            ) == 1
-        )
+#     # (2) Each vertex belongs to exactly one color class.
+#     for u in grafo.nodes:
+#         solver.Add(
+#             solver.Sum(
+#                 x[v, u] for v in grafo.nodes
+#                 if v not in grafo.adj[u] and v <= u
+#             ) == 1
+#         )
 
-    # (3) Grundy property: class of u may appear after class of p only if some
-    #     neighbour of v (a member of u's class) belongs to p's class.
-    for u in grafo.nodes:
-        for p in grafo.nodes:
-            if p != u:
-                for v in grafo.nodes:
-                    if v not in grafo.adj[u] and u <= v:
-                        solver.Add(
-                            x[u, v] <= solver.Sum(
-                                x[p, w] for w in grafo.nodes
-                                if w in grafo.adj[v]
-                                and w not in grafo.adj[p]
-                                and w >= p
-                            ) + 1 - y[p, u]
-                        )
+#     # (3) Grundy property: class of u may appear after class of p only if some
+#     #     neighbour of v (a member of u's class) belongs to p's class.
+#     for u in grafo.nodes:
+#         for p in grafo.nodes:
+#             if p != u:
+#                 for v in grafo.nodes:
+#                     if v not in grafo.adj[u] and u <= v:
+#                         solver.Add(
+#                             x[u, v] <= solver.Sum(
+#                                 x[p, w] for w in grafo.nodes
+#                                 if w in grafo.adj[v]
+#                                 and w not in grafo.adj[p]
+#                                 and w >= p
+#                             ) + 1 - y[p, u]
+#                         )
 
-    # (4) Each member v of u's class must satisfy x[u, v] ≤ x[u, u].
-    for u in grafo.nodes:
-        for v in grafo.nodes:
-            if v not in grafo.adj[u] and u <= v:
-                for w in grafo.nodes:
-                    if w in grafo.adj[v] and w not in grafo.adj[u]:
-                        continue
-                    solver.Add(x[u, v] <= x[u, u])
+#     # (4) Each member v of u's class must satisfy x[u, v] ≤ x[u, u].
+#     for u in grafo.nodes:
+#         for v in grafo.nodes:
+#             if v not in grafo.adj[u] and u <= v:
+#                 for w in grafo.nodes:
+#                     if w in grafo.adj[v] and w not in grafo.adj[u]:
+#                         continue
+#                     solver.Add(x[u, v] <= x[u, u])
 
-    # (5) Ordering is total among active representatives.
-    for u in grafo.nodes:
-        for v in grafo.nodes:
-            if u < v:
-                solver.Add(y[v, u] + y[u, v] >= x[u, u] + x[v, v] - 1)
+#     # (5) Ordering is total among active representatives.
+#     for u in grafo.nodes:
+#         for v in grafo.nodes:
+#             if u < v:
+#                 solver.Add(y[v, u] + y[u, v] >= x[u, u] + x[v, v] - 1)
 
-    # (6) Consistency and potential constraints for the ordering.
-    for u in grafo.nodes:
-        for v in grafo.nodes:
-            if u != v:
-                solver.Add(y[v, u] + y[u, v] <= x[u, u])
-                solver.Add(pot[u] - pot[v] + 1 <= n * (1 - y[u, v]))
+#     # (6) Consistency and potential constraints for the ordering.
+#     for u in grafo.nodes:
+#         for v in grafo.nodes:
+#             if u != v:
+#                 solver.Add(y[v, u] + y[u, v] <= x[u, u])
+#                 solver.Add(pot[u] - pot[v] + 1 <= n * (1 - y[u, v]))
 
-    # --- Objective: maximise the number of representatives (= Γ(G)) ---
-    solver.Maximize(solver.Sum(x[v, v] for v in grafo.nodes))
-
-    
-    start = time.time()
-    status = solver.Solve()
-    cpu = time.time() - start
-
-    feasible = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
-    gamma = int(round(solver.Objective().Value())) if feasible else None
-    
-    classes, rep = [], []
-
-    for u in grafo.nodes:
-        if x[u, u].solution_value() > 0.5:
-            cor = [u]
-            rep.append(u)
-            for v in grafo.nodes:
-                if v not in grafo.adj[u] and u < v:
-                    if x[u, v].solution_value() > 0.5:
-                        cor.append(v)
-            classes.append(cor)
-
-    # Sort color classes by the ordering encoded in y.
-    for _ in range(len(classes)):
-        for j in range(len(classes) - 1, 0, -1):
-            if y[rep[j - 1], rep[j]].solution_value() < 0.5:
-                rep[j], rep[j - 1] = rep[j - 1], rep[j]
-                classes[j], classes[j - 1] = classes[j - 1], classes[j]
+#     # --- Objective: maximise the number of representatives (= Γ(G)) ---
+#     solver.Maximize(solver.Sum(x[v, v] for v in grafo.nodes))
 
     
-    valid = is_greedy_coloring(G, classes) if classes else False
+#     start = time.time()
+#     status = solver.Solve()
+#     cpu = time.time() - start
 
-    return {
-        "model":   "carvalho_representante",
-        "gamma":     gamma,
-        "optimal": status == pywraplp.Solver.OPTIMAL,
-        "cpu_s":   cpu,
-        "classes": classes,
-        "valid":   valid,
-    }
+#     feasible = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
+#     gamma = int(round(solver.Objective().Value())) if feasible else None
+    
+#     classes, rep = [], []
+
+#     for u in grafo.nodes:
+#         if x[u, u].solution_value() > 0.5:
+#             cor = [u]
+#             rep.append(u)
+#             for v in grafo.nodes:
+#                 if v not in grafo.adj[u] and u < v:
+#                     if x[u, v].solution_value() > 0.5:
+#                         cor.append(v)
+#             classes.append(cor)
+
+#     # Sort color classes by the ordering encoded in y.
+#     for _ in range(len(classes)):
+#         for j in range(len(classes) - 1, 0, -1):
+#             if y[rep[j - 1], rep[j]].solution_value() < 0.5:
+#                 rep[j], rep[j - 1] = rep[j - 1], rep[j]
+#                 classes[j], classes[j - 1] = classes[j - 1], classes[j]
+
+    
+#     valid = is_greedy_coloring(G, classes) if classes else False
+
+#     return {
+#         "model":   "carvalho_representante",
+#         "gamma":     gamma,
+#         "optimal": status == pywraplp.Solver.OPTIMAL,
+#         "cpu_s":   cpu,
+#         "classes": classes,
+#         "valid":   valid,
+#     }
 
     
     # status = solver.Solve()
@@ -1513,6 +1513,154 @@ def solver_carvalho_representante(grafo: nx.Graph, time_limit: int = 30000):
 
     # print('Sem solução ótima.')
     # return None, None, None, None
+
+
+
+def solver_carvalho_representante(grafo: nx.Graph, order: list[int], time_limit: int = 600000):
+    """
+    Resolve o problema de coloração de Grundy usando o modelo de representantes assimétrico (F3).
+
+    Ideia:
+    - Cada classe de cor tem um representante u (menor índice na ordem dada).
+    - x[u,v] = 1 ⇔ v pertence à classe cujo representante é u.
+    - y[u,v] = 1 ⇔ classe de u vem antes da classe de v.
+    """
+
+    solver = pywraplp.Solver.CreateSolver('SCIP')
+    solver.set_time_limit(time_limit)
+
+    n = len(grafo.nodes)
+
+    # =========================
+    # Variáveis x[u,v]
+    # =========================
+    # Apenas para u ≤ v e u não adjacente a v
+    x = {}
+    for i in range(len(order)):
+        for j in range(i, len(order)):
+            u = order[i]
+            v = order[j]
+            if u == v or v not in grafo.adj[u]:
+                x[u, v] = solver.IntVar(0, 1, f"x[{u},{v}]")
+
+    # =========================
+    # Variáveis y[u,v]
+    # =========================
+    y = {}
+    for u in grafo.nodes:
+        for v in grafo.nodes:
+            if u != v:
+                y[u, v] = solver.IntVar(0, 1, f"y[{u},{v}]")
+
+    # =========================
+    # Potenciais (eliminação de ciclos)
+    # =========================
+    pot = {v: solver.NumVar(0, n - 1, f"pot[{v}]") for v in grafo.nodes}
+
+    # =========================
+    # (1) Ativação
+    # =========================
+    # Se v pertence à classe de u ⇒ u é representante
+    for (u, v) in x:
+        solver.Add(x[u, v] <= x[u, u])
+
+    # =========================
+    # (2) Independência (clique)
+    # =========================
+    for u in grafo.nodes:
+        for (v, w) in grafo.edges:
+            if (u, v) in x and (u, w) in x and (v,w) in x:
+                solver.Add(x[u, v] + x[u, w] <= x[u,u] )
+
+    # =========================
+    # (3) Cada vértice tem exatamente um representante
+    # =========================
+    for v in grafo.nodes:
+        solver.Add(
+            solver.Sum(x[u, v] for u in grafo.nodes if (u, v) in x) == 1
+        )
+
+    # =========================
+    # (4) Propriedade de Grundy
+    # =========================
+    for (u, v) in x:
+        for p in grafo.nodes:
+            if p != u:
+                solver.Add(
+                    x[u, v] <=
+                    solver.Sum(
+                        x[p, w]
+                        for (a, w) in x
+                        if a == p and w in grafo.adj[v]
+                    )
+                    + 1 - y[p, u]
+                )
+
+    # =========================
+    # (5) Ordem total entre representantes ativos
+    # =========================
+    for (u,v) in x:
+        if u != v:
+            solver.Add(
+                y[u, v] + y[v, u] >= x[u, u] + x[v, v] - 1
+            )
+
+    # =========================
+    # (6) Consistência + anti-ciclo
+    # =========================
+    for u in grafo.nodes:
+        for v in grafo.nodes:
+            if u != v:
+                solver.Add(
+                    y[u, v] + y[v, u] <= x[u, u] + x[v, v]
+                )
+                solver.Add(
+                    pot[u] - pot[v] + 1 <= n * (1 - y[u, v])
+                )
+
+    # =========================
+    # Função objetivo
+    # =========================
+    solver.Maximize(solver.Sum(x[v, v] for v in grafo.nodes))
+    
+
+    start = time.time()
+    status = solver.Solve()
+    cpu = time.time() - start
+
+    feasible = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
+    gamma = int(round(solver.Objective().Value())) if feasible else None
+    
+    classes, rep = [], []
+
+    for u in grafo.nodes:
+        if x[u, u].solution_value() > 0.5:
+            cor = [u]
+            rep.append(u)
+            for v in grafo.nodes:
+                if v not in grafo.adj[u] and u < v:
+                    if x[u, v].solution_value() > 0.5:
+                        cor.append(v)
+            classes.append(cor)
+
+    # Sort color classes by the ordering encoded in y.
+    for _ in range(len(classes)):
+        for j in range(len(classes) - 1, 0, -1):
+            if y[rep[j - 1], rep[j]].solution_value() < 0.5:
+                rep[j], rep[j - 1] = rep[j - 1], rep[j]
+                classes[j], classes[j - 1] = classes[j - 1], classes[j]
+
+    
+    valid = is_greedy_coloring(grafo, classes) if classes else False
+
+    return {
+        "model":   "carvalho_representante",
+        "gamma":     gamma,
+        "optimal": status == pywraplp.Solver.OPTIMAL,
+        "cpu_s":   cpu,
+        "classes": classes,
+        "valid":   valid,
+    }
 
 
 
@@ -1860,7 +2008,7 @@ if __name__ == "__main__":
         ("BB/FSF",  branch3),
     ]
 
-    G = nx.erdos_renyi_graph(15, 0.5, seed=1)
+    G = nx.erdos_renyi_graph(10, 0.5, seed=1)
 
     
     r = branch_and_bound3(G, stair_factor)
@@ -1875,7 +2023,9 @@ if __name__ == "__main__":
     r = solver_carvalho_modificado(G, stair_factor(G))
     print(r)
 
-
+    order = list(G.nodes())
+    r = solver_carvalho_representante(G, order, stair_factor(G))
+    print(r)
 
     #print("=== Correctness tests ===")
     #run_correctness_tests(solvers)
