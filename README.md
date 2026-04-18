@@ -18,14 +18,8 @@ This repository provides exact solvers for the **Grundy (first-fit chromatic) nu
    - [Branch-and-bound solvers](#branch-and-bound-solvers)
    - [Enumerative baseline](#enumerative-baseline)
    - [enumerate_orders](#enumerate_orders)
-6. [The enumerate_orders Algorithm](#the-enumerate_orders-algorithm)
-   - [Motivation](#motivation)
-   - [The four moves](#the-four-moves)
-   - [Pending evictions and min_class](#pending-evictions-and-min_class)
-   - [Correctness argument](#correctness-argument)
-   - [Complexity](#complexity)
-7. [Running the Tests](#running-the-tests)
-8. [References](#references)
+6. [Running the Tests](#running-the-tests)
+7. [References](#references)
 
 ---
 
@@ -140,7 +134,9 @@ Returns `True` if and only if every vertex $v \in C_i$ has at least one neighbou
 
 All three solvers implement the recurrence:
 
-$$\Gamma(S) = \max\bigl\{\, \Gamma(S \setminus X) + 1 \;\big|\; X \subseteq S \text{ is a maximal independent set of } G[S] \bigr\}$$
+$$
+\Gamma(S) = \max\left\{\, \Gamma(S \setminus X) + 1 \;\middle|\; X \subseteq S \text{ is a maximal independent set of } G[S] \right\}
+$$
 
 They differ only in the upper-bound function used for pruning.
 
@@ -181,71 +177,6 @@ colorings: set = enumerate_orders(G)
 ```
 
 Returns the set of all distinct Grundy colorings of $G$ as a set of tuples of sorted tuples. See the next section for a full description of the algorithm.
-
----
-
-## The enumerate_orders Algorithm
-
-### Motivation
-
-The brute-force approach (`counting_grundy_colorings`) iterates over all $n!$ vertex orderings, which is infeasible for $n \gtrsim 14$. Many orderings produce the same color-class partition, and many partitions are clearly not Grundy colorings.
-
-`enumerate_orders` inverts the perspective: instead of iterating over orderings and deriving partitions, it directly constructs color-class partitions incrementally via backtracking, verifying the Grundy condition only at the leaves. This avoids redundant permutations and admits structural pruning.
-
-### The four moves
-
-The algorithm places vertices one by one. The *current vertex* $v$ is either the first element of the `pending` list (an evicted vertex, described below) or `remaining[idx]` (the next unplaced vertex from the fixed input order). For each existing color class $C[i]$ (iterated from `min_class` upward), the algorithm tries four moves:
-
-**Move 1 — No conflict.**
-If $v$ has no neighbour in $C[i]$, append $v$ to $C[i]$. This corresponds to a greedy ordering where $v$ is colored *after* all current members of $C[i]$ and picks color $i$ because no conflict exists.
-
-**Move 2 — New class immediately after $i$.**
-Insert the singleton $\{v\}$ as a new class at position $i+1$. This corresponds to a greedy ordering where $v$ is colored after the members of $C[i]$ but gets a higher color because of a conflict.
-
-**Move 3 — Eviction.**
-$v$ enters $C[i]$, and its neighbours in $C[i]$ are *evicted* into the `pending` list with `min_class = i + 1`. This simulates a greedy ordering where $v$ is colored *before* those neighbours: when $v$ is processed, it picks color $i$ freely, and when the evicted neighbours are later processed, they find $v$ in $C[i]$ and are forced to a higher color. The evicted vertices can validly form a class at any position $j > i$ because they are a subset of the independent set $C[i]$.
-
-**Move 4 — New class at the end.**
-Open a fresh singleton $\{v\}$ appended at the end of the current partition. This is always a valid option regardless of conflicts.
-
-After all four moves are tried for all existing classes, any completed partition (no vertices unplaced, no pending evictions) is verified by `is_greedy_coloring` and added to the result set if valid.
-
-### Pending evictions and min_class
-
-The `pending` list carries pairs `(vertex, min_class)`. The `min_class` constraint ensures that an evicted vertex is never re-inserted into the class it was removed from, nor into any earlier class. The loop over existing classes begins at `min_class`:
-
-```python
-for i in range(min_class, len(C)):
-    ...
-```
-
-When an evicted vertex itself triggers another eviction (Move 3 applied to a pending vertex), the new evicted vertices receive `min_class = i + 1` where `i` is the *current* class position, not inherited from the parent eviction. This is correct: what matters is only the position of the class from which they are removed.
-
-### Correctness argument
-
-**Claim:** `enumerate_orders(G)` returns exactly the set of all Grundy colorings of $G$.
-
-**Soundness** (no false positives): every partition added to the result set passes `is_greedy_coloring`, which checks the Grundy condition exactly. Therefore every returned partition is indeed a Grundy coloring.
-
-**Completeness** (no false negatives): let $\mathcal{C} = (C_0, C_1, \ldots, C_{k-1})$ be any Grundy coloring of $G$, produced by some ordering $\sigma$. We show that `enumerate_orders` generates $\mathcal{C}$ (or a partition equal to it as a set-partition).
-
-Process the vertices of $\sigma$ in order. At the moment vertex $v$ is processed by the greedy rule under $\sigma$, it receives color $i$ — meaning $v$ has at least one neighbour in each of $C_0, \ldots, C_{i-1}$ and no neighbour in $C_i$ (among the vertices already colored). In the backtrack, this situation is captured by one of the four moves:
-
-- If $v$ has no neighbour in $C[i]$ at the current state of the backtrack → **Move 1**.
-- If $v$ is forced to a new class due to conflicts with $C[i]$ → **Move 2** or **Move 4**.
-- If some members of $C[i]$ were colored *after* $v$ in $\sigma$ and therefore $v$ should enter $C[i]$ displacing them → **Move 3** (eviction).
-
-Because the backtrack explores all combinations of these moves across all classes and all vertices, it will reach a state where $C = \mathcal{C}$. The pruning via `stair_factor` only discards partial states where the number of open classes already exceeds the stair-factor upper bound on $\Gamma(G)$; since $|\mathcal{C}| = k \leq \Gamma(G) \leq \text{stair\_factor}(G)$, no valid Grundy coloring is pruned.
-
-**Formal proof:** See `docs/correctness.tex` for a full inductive proof.
-
-### Complexity
-
-In the worst case the number of candidate partitions explored is super-exponential (the Bell number $B_n$ bounds the number of set-partitions). In practice the algorithm is far faster than the $n!$ brute-force baseline because:
-
-1. Many structurally equivalent orderings are merged into a single partition (de-duplication via the set).
-2. The `stair_factor` pruning eliminates subtrees that cannot produce colorings with more classes than the current upper bound.
-3. The `min_class` constraint on pending vertices reduces branching for evicted vertices.
 
 ---
 
