@@ -44,14 +44,39 @@ References
            maximal cliques. *Theoretical Computer Science*, 407(1-3), 564-568.
 .. [MM65]  Moon, J. and Moser, L. (1965). On cliques in graphs.
            *Israel Journal of Mathematics*, 3(1), 23-28.
+
+
+
+Integer programming formulations for computing the Grundy (first-fit chromatic)
+number of an undirected graph.
+
+Four ILP formulations are provided, all solved via OR-Tools (SCIP backend):
+
+    * ``solver_rodrigues``              – partition model (Rodrigues, 2020)
+    * ``solver_carvalho``               – partition model (Carvalho et al., 2023)
+    * ``solver_carvalho_representante`` – asymmetric representative model (Carvalho et al., 2023)
+    * ``solver_carvalho_modificado``    – modified partition model with extra Grundy cuts
+    * ``model_grundy5``                 – modified asymmetric representative model
+
+References
+----------
+.. [Rod20]  Rodrigues, E. N. H. D. (2020). Coloração k-imprópria gulosa.
+            Repositório UFC. http://www.repositorio.ufc.br/handle/riufc/50955
+.. [Car23]  Carvalho, M., Melo, R., Santos, M. C., Toso, R. F., and
+            Resende, M. G. C. (2023). Formulações de programação inteira para o
+            problema da coloração de grundy. Anais SBPO 2024.
+
 """
 
 import time
 import itertools
 from collections import defaultdict, deque
 from typing import Optional
-
+import math
 import networkx as nx
+from ortools.sat.python import cp_model
+from ortools.linear_solver import pywraplp
+
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +556,221 @@ def find_cliques(G: nx.Graph, nodes: Optional[list] = None):
 # ---------------------------------------------------------------------------
 # Branch-and-bound solvers
 # ---------------------------------------------------------------------------
+from typing import Callable
+
+def branch_and_bound(G: nx.Graph, ub_func : Callable [[ nx . Graph ] , int ] = fast_stair_factor) -> dict:
+    """Compute the exact Grundy number of *G* using branch-and-bound with ub_function
+
+    Algorithm overview
+    ------------------
+    The search tree is built using the recurrence:
+
+        Γ(S) = max{ Γ(S \\ X) + 1  |  X ⊆ S is an independent dominating set of G[S] }
+
+    At each node of the search tree every maximal independent set X of the
+    current subgraph G[S] is a candidate.  The tree is pruned whenever:
+
+        |C| + upper_bound(G[S]) ≤ LB
+
+    where |C| is the number of color classes already selected and LB is the
+    current best lower bound (initialised by two greedy heuristics).
+
+    Parameters
+    ----------
+    G : nx.Graph
+        A simple undirected graph.
+
+    ub_function:
+
+    Returns
+    -------
+    dict
+        Keys: ``gamma`` (int), ``classes`` (list of list), ``valid`` (bool),
+        ``cpu_s`` (float), ``bb_nodes`` (int), ``model`` (str).
+
+    References
+    ----------
+    .. [BFK18] Bonnet et al. (2018), §3.
+    """
+    LB = max(lower_bound(G), lower_bound2(G))
+    bestC: list[list] = []
+    bb_nodes = 0
+
+    def expand(G: nx.Graph, C: list[list]) -> None:
+        nonlocal LB, bb_nodes, bestC
+        if len(G) == 0:
+            if len(C) > LB:
+                LB = len(C)
+                bestC = C
+            return
+        if len(C) + ub_func(G) <= LB:
+            return
+        
+        bb_nodes += 1
+        Gc = nx.complement(G)
+        for cor in find_cliques(Gc):
+            newC = C + [cor]
+            H = G.copy()
+            H.remove_nodes_from(cor)
+            expand(H, newC)
+    
+        
+    start = time.time()
+    expand(G, [])
+    return {
+        "model":    "BB",
+        "gamma":    LB,
+        "cpu_s":    time.time() - start,
+        "classes":  bestC,
+        "valid":    is_greedy_coloring(G, bestC),
+        "bb_nodes": bb_nodes,
+    }
+
+
+def branch_and_bound2(G: nx.Graph, ub_func : Callable [[ nx . Graph ] , int ] = fast_stair_factor) -> dict:
+    """Compute the exact Grundy number of *G* using branch-and-bound with ub_function
+
+    Algorithm overview
+    ------------------
+    The search tree is built using the recurrence:
+
+        Γ(S) = max{ Γ(S \\ X) + 1  |  X ⊆ S is an independent dominating set of G[S] }
+
+    At each node of the search tree every maximal independent set X of the
+    current subgraph G[S] is a candidate.  The tree is pruned whenever:
+
+        |C| + upper_bound(G[S]) ≤ LB
+
+    where |C| is the number of color classes already selected and LB is the
+    current best lower bound (initialised by two greedy heuristics).
+
+    Parameters
+    ----------
+    G : nx.Graph
+        A simple undirected graph.
+
+    ub_function:
+
+    Returns
+    -------
+    dict
+        Keys: ``gamma`` (int), ``classes`` (list of list), ``valid`` (bool),
+        ``cpu_s`` (float), ``bb_nodes`` (int), ``model`` (str).
+
+    References
+    ----------
+    .. [BFK18] Bonnet et al. (2018), §3.
+    """
+    LB = max(lower_bound(G), lower_bound2(G))
+    bestC: list[list] = []
+    bb_nodes = 0
+
+    def expand(active : frozenset , C: list[list]) -> None:
+        nonlocal LB, bb_nodes, bestC
+        if  not active:
+            if len(C) > LB:
+                LB = len(C)
+                bestC = C
+            return
+        
+        H_view = G.subgraph ( active ) # O (1) ? apenas uma visao
+
+        if len(C) + ub_func(H_view) <= LB:
+            return
+        
+        bb_nodes += 1
+        
+        Hc = nx.complement (H_view) # O ( n ^2) apenas aqui , nao por clique
+        
+        for clique in find_cliques(Hc) :
+            new_active = active - frozenset ( clique )
+            expand ( new_active , C + [ clique ])
+        
+    start = time.time()
+    expand(frozenset(G.nodes()), [])
+    return {
+        "model":    "BB",
+        "gamma":    LB,
+        "cpu_s":    time.time() - start,
+        "classes":  bestC,
+        "valid":    is_greedy_coloring(G, bestC),
+        "bb_nodes": bb_nodes,
+    }
+
+
+def branch_and_bound3(G: nx.Graph, ub_func : Callable [[ nx . Graph ] , int ] = fast_stair_factor) -> dict:
+    """Compute the exact Grundy number of *G* using branch-and-bound with ub_function
+
+    Algorithm overview
+    ------------------
+    The search tree is built using the recurrence:
+
+        Γ(S) = max{ Γ(S \\ X) + 1  |  X ⊆ S is an independent dominating set of G[S] }
+
+    At each node of the search tree every maximal independent set X of the
+    current subgraph G[S] is a candidate.  The tree is pruned whenever:
+
+        |C| + upper_bound(G[S]) ≤ LB
+
+    where |C| is the number of color classes already selected and LB is the
+    current best lower bound (initialised by two greedy heuristics).
+
+    Parameters
+    ----------
+    G : nx.Graph
+        A simple undirected graph.
+
+    ub_function:
+
+    Returns
+    -------
+    dict
+        Keys: ``gamma`` (int), ``classes`` (list of list), ``valid`` (bool),
+        ``cpu_s`` (float), ``bb_nodes`` (int), ``model`` (str).
+
+    References
+    ----------
+    .. [BFK18] Bonnet et al. (2018), §3.
+    """
+    LB = max(lower_bound(G), lower_bound2(G))
+    bestC: list[list] = []
+    bb_nodes = 0
+
+    def expand(G: nx.Graph, C: list[list]) -> None:
+        nonlocal LB, bb_nodes, bestC
+        if len(G) == 0:
+            if len(C) > LB:
+                LB = len(C)
+                bestC = C
+            return
+        if len(C) + ub_func(G) <= LB:
+            return
+        
+        bb_nodes += 1
+        Gc = nx.complement(G)
+        for clique in find_cliques(Gc):
+            # salva arestas dos nos a remover
+            removed_edges = [( u , v ) for u in clique for v in list ( G.neighbors ( u ) ) ]
+            G.remove_nodes_from( clique )
+
+            expand (G , C + [ clique ])
+            # restaura ( backtrack )
+            G.add_nodes_from ( clique )
+            G.add_edges_from ( removed_edges )
+        
+    start = time.time()
+    expand(G, [])
+    return {
+        "model":    "BB",
+        "gamma":    LB,
+        "cpu_s":    time.time() - start,
+        "classes":  bestC,
+        "valid":    is_greedy_coloring(G, bestC),
+        "bb_nodes": bb_nodes,
+    }
+
+
+
 
 def branch(G: nx.Graph) -> dict:
     """Compute the exact Grundy number of *G* using branch-and-bound with the
@@ -714,6 +954,566 @@ def branch3(G: nx.Graph) -> dict:
         "valid":    is_greedy_coloring(G, bestC),
         "bb_nodes": bb_nodes,
     }
+
+
+def solver_rodrigues(grafo: nx.Graph, upperbound: int, time_limit : int = 600000 ):
+    """Solve the Grundy coloring problem via the Rodrigues partition model.
+
+    Partition-based ILP where variables x[v, c] indicate whether vertex *v*
+    receives color *c*, and z[c] indicates whether color *c* is used at all.
+    The Grundy property is enforced by requiring that every vertex assigned to
+    color *c* has at least one neighbour in each of the colors 0, …, c−1
+    (unless no such colors are active yet).
+
+    Modifications over the original formulation [Rod20]:
+
+    * Isolated vertices are pinned to color 0.
+    * An upper bound on the number of colors is supplied externally.
+    * Symmetry is broken by requiring z[c] ≥ z[c+1] for all c.
+
+    Number of constraints: O(|V| · (|E| + |C|))
+    Grundy property constraints: O(|V| · |C|)
+
+    Parameters
+    ----------
+    grafo : nx.Graph
+        Input graph.
+    upperbound : int
+        Maximum number of colors to consider (e.g. Δ(G) + 1).
+    time_limit : int, optional
+        Solver wall-clock time limit in milliseconds (default 30 000).
+
+    Returns
+    -------
+    tuple (optimal, num_colors, C, nodes)
+        * **optimal** (*bool*) – ``True`` if the solution is provably optimal.
+        * **num_colors** (*int*) – Grundy number Γ(G) found.
+        * **C** (*list of list*) – Color-class partition of the vertices.
+        * **nodes** (*int*) – Number of branch-and-bound nodes explored.
+        All entries are ``None`` when no feasible solution is found.
+
+    References
+    ----------
+    .. [Rod20] Rodrigues (2020), §3.
+    """
+    solver = pywraplp.Solver.CreateSolver('SCIP')
+    solver.set_time_limit(time_limit)
+
+    # --- Decision variables ---
+    # x[v, c] = 1  iff vertex v is assigned color c.
+    x = {}
+    for v in grafo.nodes:
+        for c in range(upperbound):
+            x[v, c] = solver.IntVar(0, 1, "x[%s,%s]" % (v, c))
+
+    # z[c] = 1  iff color c is used by at least one vertex.
+    z = {}
+    for c in range(upperbound):
+        z[c] = solver.IntVar(0, 1, "z[%d]" % c)
+
+    # --- Constraints ---
+
+    # (1) Each vertex receives exactly one color.
+    for v in grafo.nodes:
+        solver.Add(solver.Sum([x[v, c] for c in range(upperbound)]) == 1)
+
+    # (2) z[c] can be 1 only if some vertex uses color c.
+    for c in range(upperbound):
+        solver.Add(z[c] <= solver.Sum([x[v, c] for v in grafo.nodes]))
+
+    # (3) Adjacent vertices may not share a color class.
+    for (u, v) in grafo.edges:
+        for c in range(upperbound):
+            solver.Add(x[u, c] + x[v, c] <= z[c])
+
+    # (4) Grundy property: x[v, c] = 1 requires that v has no color d < c
+    #     already assigned AND that every color d < c has at least one
+    #     neighbour of v.
+    for v in grafo.nodes:
+        for c in range(upperbound):
+            solver.Add(
+                x[v, c] >= 1
+                - solver.Sum(x[v, d] for d in range(c))
+                - solver.Sum(x[u, c] for u in grafo.adj[v])
+            )
+
+    # (5) Symmetry breaking: colors are used in order (z[0] ≥ z[1] ≥ …).
+    for c in range(1, upperbound):
+        solver.Add(z[c] <= z[c - 1])
+
+    # (6) Isolated vertices must receive color 0.
+    for v in grafo.nodes:
+        if len(grafo.adj[v]) == 0:
+            solver.Add(x[v, 0] == 1)
+
+    # --- Objective: maximise the number of colors used ---
+    solver.Maximize(solver.Sum(z[c] for c in range(upperbound)))
+    
+    start = time.time()
+    status = solver.Solve()
+    cpu = time.time() - start
+
+    feasible = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
+    gamma = int(round(solver.Objective().Value())) if feasible else None
+    
+    classes = [[] for _ in range(gamma)]
+    for v in grafo.nodes:
+        for i in range(gamma):
+            if x[v, i].solution_value() >= 0.5:
+                classes[i].append(v)
+                break
+    
+    
+    valid = is_greedy_coloring(G, classes) if classes else False
+
+    return {
+        "model":   "rodrigues",
+        "gamma":     gamma,
+        "optimal": status == pywraplp.Solver.OPTIMAL,
+        "cpu_s":   cpu,
+        "classes": classes,
+        "valid":   valid,
+    }
+
+
+def solver_carvalho(grafo: nx.Graph, upperbound: int, time_limit : int = 600000):
+    """Solve the Grundy coloring problem via the standard Carvalho partition model.
+
+    Partition-based ILP analogous to :func:`solver_rodrigues`, but the Grundy
+    property is expressed with a quadratic number of constraints in |C|: for
+    every vertex *v* and every pair of colors c < c′, at least one neighbour
+    of *v* must hold color *c* whenever *v* itself holds color *c′*.
+
+    Number of constraints: O(|V| · (|E| + |C|²))
+    Grundy property constraints: O(|V| · |C|²)
+
+    Parameters
+    ----------
+    grafo : nx.Graph
+        Input graph.
+    upperbound : int
+        Maximum number of colors to consider.
+    time_limit : int, optional
+        Solver time limit in milliseconds (default 30 000).
+
+    Returns
+    -------
+    tuple (optimal, num_colors, C, nodes)
+        Same layout as :func:`solver_rodrigues`.
+
+    References
+    ----------
+    .. [Car23] Carvalho et al. (2023), Formulation F2.
+    """
+    solver = pywraplp.Solver.CreateSolver('SCIP')
+    solver.set_time_limit(time_limit)
+
+    # --- Decision variables ---
+    x = {}
+    for v in grafo.nodes:
+        for c in range(upperbound):
+            x[v, c] = solver.IntVar(0, 1, "x[%s,%s]" % (v, c))
+
+    z = {}
+    for c in range(upperbound):
+        z[c] = solver.IntVar(0, 1, "z[%d]" % c)
+
+    # --- Constraints ---
+
+    # (1) Each vertex receives exactly one color.
+    for v in grafo.nodes:
+        solver.Add(solver.Sum([x[v, c] for c in range(upperbound)]) == 1)
+
+    # (2) z[c] is active only if some vertex uses color c.
+    for c in range(upperbound):
+        solver.Add(z[c] <= solver.Sum([x[v, c] for v in grafo.nodes]))
+
+    # (3) Adjacent vertices may not share a color class.
+    for (u, v) in grafo.edges:
+        for c in range(upperbound):
+            solver.Add(x[u, c] + x[v, c] <= z[c])
+
+    # (4) Isolated vertices: x[v, c] ≤ z[c] for all c (they consume a class).
+    for v in grafo.nodes:
+        if len(grafo.adj[v]) == 0:
+            for c in range(upperbound):
+                solver.Add(x[v, c] <= z[c])
+
+    # (5) Symmetry breaking: z[0] ≥ z[1] ≥ … ≥ z[upperbound-1].
+    for c in range(upperbound):
+        for c_ in range(c + 1, upperbound):
+            solver.Add(z[c_] <= z[c])
+
+    # (6) Grundy property (quadratic form): if v has color c′ > c, then at
+    #     least one neighbour of v holds color c.
+    for v in grafo.nodes:
+        for c in range(upperbound):
+            for c_ in range(c + 1, upperbound):
+                solver.Add(
+                    x[v, c_] <= solver.Sum(x[u, c] for u in grafo.adj[v])
+                )
+
+    # --- Objective ---
+    solver.Maximize(solver.Sum(z[c] for c in range(upperbound)))
+
+    start = time.time()
+    status = solver.Solve()
+    cpu = time.time() - start
+
+    feasible = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
+    gamma = int(round(solver.Objective().Value())) if feasible else None
+    
+    classes = [[] for _ in range(gamma)]
+    for v in grafo.nodes:
+        for i in range(gamma):
+            if x[v, i].solution_value() >= 0.5:
+                classes[i].append(v)
+                break
+    
+    
+    valid = is_greedy_coloring(G, classes) if classes else False
+
+    return {
+        "model":   "carvalho",
+        "gamma":     gamma,
+        "optimal": status == pywraplp.Solver.OPTIMAL,
+        "cpu_s":   cpu,
+        "classes": classes,
+        "valid":   valid,
+    }
+
+    
+    
+    # status = solver.Solve()
+
+    # if status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
+    #     num_colors = math.floor(solver.Objective().Value() + 0.5)
+    #     C = _extract_partition_solution(solver, grafo, num_colors, x)
+    #     return status == pywraplp.Solver.OPTIMAL, num_colors, C, solver.nodes()
+
+    # print('Sem solução ótima.')
+    # return None, None, None, None
+
+
+
+
+    #if status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
+    #    num_colors = math.floor(solver.Objective().Value() + 0.5)
+    #    C = _extract_partition_solution(solver, grafo, num_colors, x)
+    #    return status == pywraplp.Solver.OPTIMAL, num_colors, C, solver.nodes()
+
+    #print('Sem solução ótima.')
+    #return None, None, None, None
+
+def solver_carvalho_modificado(grafo: nx.Graph, upperbound: int, time_limit: int = 30000):
+    """Solve the Grundy coloring problem via the modified Carvalho partition model.
+
+    Extends :func:`solver_carvalho` with an additional aggregated Grundy cut
+    (sometimes called the *Fábio cut*):
+
+        Σ_{c′ > c} x[v, c′] ≤ Σ_{u ∈ N(v)} x[u, c]   ∀ v ∈ V, c ∈ C
+
+    This cut is implied by the per-pair constraints of :func:`solver_carvalho`
+    but can tighten the LP relaxation.
+
+    Number of constraints: O(|V| · (|E| + |C|))
+    Grundy property constraints (pair + aggregated): O(|V| · |C|²)
+
+    Parameters
+    ----------
+    grafo : nx.Graph
+        Input graph.
+    upperbound : int
+        Maximum number of colors to consider.
+    time_limit : int, optional
+        Solver time limit in milliseconds (default 30 000).
+
+    Returns
+    -------
+    tuple (optimal, num_colors, C, nodes)
+        Same layout as :func:`solver_rodrigues`.
+    """
+    solver = pywraplp.Solver.CreateSolver('SCIP')
+    solver.set_time_limit(time_limit)
+
+    # --- Decision variables ---
+    x = {}
+    for v in grafo.nodes:
+        for c in range(upperbound):
+            x[v, c] = solver.IntVar(0, 1, "x[%s,%s]" % (v, c))
+
+    z = {}
+    for c in range(upperbound):
+        z[c] = solver.IntVar(0, 1, "z[%d]" % c)
+
+    # --- Constraints ---
+
+    # (1) Each vertex receives exactly one color.
+    for v in grafo.nodes:
+        solver.Add(solver.Sum([x[v, c] for c in range(upperbound)]) == 1)
+
+    # (2) z[c] is active only if some vertex uses color c.
+    for c in range(upperbound):
+        solver.Add(z[c] <= solver.Sum([x[v, c] for v in grafo.nodes]))
+
+    # (3) Adjacent vertices may not share a color class.
+    for (u, v) in grafo.edges:
+        for c in range(upperbound):
+            solver.Add(x[u, c] + x[v, c] <= z[c])
+
+    # (4) Isolated vertices: x[v, 0] ≤ z[c] (must use the first active class).
+    for v in grafo.nodes:
+        if len(grafo.adj[v]) == 0:
+            solver.Add(x[v, 0] <= z[c])
+
+    # (5) Symmetry breaking: z[0] ≥ z[1] ≥ …
+    for c in range(1, upperbound):
+        solver.Add(z[c] <= z[c - 1])
+
+    # (6) Aggregated Grundy cut (Fábio cut): the number of colors above c that
+    #     v may hold is bounded by the number of v's neighbours in color c.
+    for v in grafo.nodes:
+        for c in range(upperbound):
+            solver.Add(
+                solver.Sum(x[v, c_] for c_ in range(c + 1, upperbound))
+                <= solver.Sum(x[u, c] for u in grafo.adj[v] if u != v)
+            )
+
+    # (7) Per-pair Grundy property (same as Carvalho standard model).
+    for v in grafo.nodes:
+        for c in range(upperbound):
+            for c_ in range(c + 1, upperbound):
+                solver.Add(
+                    x[v, c_] <= solver.Sum(x[u, c] for u in grafo.adj[v])
+                )
+
+    # --- Objective ---
+    solver.Maximize(solver.Sum(z[c] for c in range(upperbound)))
+
+    start = time.time()
+    status = solver.Solve()
+    cpu = time.time() - start
+
+    feasible = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
+    gamma = int(round(solver.Objective().Value())) if feasible else None
+    
+    classes = [[] for _ in range(gamma)]
+    for v in grafo.nodes:
+        for i in range(gamma):
+            if x[v, i].solution_value() >= 0.5:
+                classes[i].append(v)
+                break
+    
+    
+    valid = is_greedy_coloring(G, classes) if classes else False
+
+    return {
+        "model":   "carvalho_modificado",
+        "gamma":     gamma,
+        "optimal": status == pywraplp.Solver.OPTIMAL,
+        "cpu_s":   cpu,
+        "classes": classes,
+        "valid":   valid,
+    }
+
+
+    # status = solver.Solve()
+
+    # if status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
+    #     num_colors = math.floor(solver.Objective().Value() + 0.5)
+    #     C = _extract_partition_solution(solver, grafo, num_colors, x)
+    #     return status == pywraplp.Solver.OPTIMAL, num_colors, C, solver.nodes()
+
+    # print('Sem solução ótima.')
+    # return None, None, None, None
+
+
+def solver_carvalho_representante(grafo: nx.Graph, time_limit: int = 30000):
+    """Solve the Grundy coloring problem via the asymmetric representative model.
+
+    Each color class is represented by its **smallest-indexed** vertex (the
+    *representative*).  Binary variable x[u, v] = 1 means that vertex *v*
+    belongs to the color class whose representative is *u* (u ≤ v, and *u*
+    and *v* are non-adjacent).  The ordering between representatives is tracked
+    by auxiliary variables y[u, v] and linearised with potential variables pot.
+
+    Number of constraints: O(|V| · (|E| + |C|²))
+    Grundy property constraints: O(|V| · |C|²)
+
+    Parameters
+    ----------
+    grafo : nx.Graph
+        Input graph.
+    time_limit : int, optional
+        Solver time limit in milliseconds (default 30 000).
+
+    Returns
+    -------
+    tuple (optimal, num_colors, C, nodes)
+        Same layout as :func:`solver_rodrigues`.
+
+    References
+    ----------
+    .. [Car23] Carvalho et al. (2023), Formulation F3 (asymmetric representative).
+    """
+    solver = pywraplp.Solver.CreateSolver('SCIP')
+    solver.set_time_limit(time_limit)
+
+    n = len(grafo.nodes)
+
+    # --- Decision variables ---
+    # x[u, v] = 1  iff v is in the color class represented by u (u ≤ v, non-adjacent).
+    x = {}
+    for v in grafo.nodes:
+        for u in grafo.nodes:
+            if u not in grafo.adj[v] or u == v:
+                x[v, u] = solver.IntVar(0, 1, "x[%s,%s]" % (v, u))
+
+    # y[u, v] = 1  iff the class of u comes *before* the class of v in the
+    #              Grundy coloring order (u ≠ v).
+    y = {}
+    for v in grafo.nodes:
+        for u in grafo.nodes:
+            if u != v:
+                y[v, u] = solver.IntVar(0, 1, "y[%s,%s]" % (v, u))
+
+    # pot[v]: potential used to linearise the acyclicity of the y relation.
+    pot = {}
+    for v in grafo.nodes:
+        pot[v] = solver.NumVar(0, n - 1, "pot[%d]" % v)
+
+    # --- Constraints ---
+
+    # (1) Clique constraint: within the same class, any two vertices must be
+    #     non-adjacent, so u cannot simultaneously represent both v and w if
+    #     (v, w) is an edge.
+    for u in grafo.nodes:
+        for v in grafo.nodes:
+            for w in grafo.nodes:
+                if (v not in grafo.adj[u] and w not in grafo.adj[u]
+                        and (v, w) in grafo.edges
+                        and u <= v and v < w):
+                    solver.Add(x[u, v] + x[u, w] <= x[u, u])
+
+    # (2) Each vertex belongs to exactly one color class.
+    for u in grafo.nodes:
+        solver.Add(
+            solver.Sum(
+                x[v, u] for v in grafo.nodes
+                if v not in grafo.adj[u] and v <= u
+            ) == 1
+        )
+
+    # (3) Grundy property: class of u may appear after class of p only if some
+    #     neighbour of v (a member of u's class) belongs to p's class.
+    for u in grafo.nodes:
+        for p in grafo.nodes:
+            if p != u:
+                for v in grafo.nodes:
+                    if v not in grafo.adj[u] and u <= v:
+                        solver.Add(
+                            x[u, v] <= solver.Sum(
+                                x[p, w] for w in grafo.nodes
+                                if w in grafo.adj[v]
+                                and w not in grafo.adj[p]
+                                and w >= p
+                            ) + 1 - y[p, u]
+                        )
+
+    # (4) Each member v of u's class must satisfy x[u, v] ≤ x[u, u].
+    for u in grafo.nodes:
+        for v in grafo.nodes:
+            if v not in grafo.adj[u] and u <= v:
+                for w in grafo.nodes:
+                    if w in grafo.adj[v] and w not in grafo.adj[u]:
+                        continue
+                    solver.Add(x[u, v] <= x[u, u])
+
+    # (5) Ordering is total among active representatives.
+    for u in grafo.nodes:
+        for v in grafo.nodes:
+            if u < v:
+                solver.Add(y[v, u] + y[u, v] >= x[u, u] + x[v, v] - 1)
+
+    # (6) Consistency and potential constraints for the ordering.
+    for u in grafo.nodes:
+        for v in grafo.nodes:
+            if u != v:
+                solver.Add(y[v, u] + y[u, v] <= x[u, u])
+                solver.Add(pot[u] - pot[v] + 1 <= n * (1 - y[u, v]))
+
+    # --- Objective: maximise the number of representatives (= Γ(G)) ---
+    solver.Maximize(solver.Sum(x[v, v] for v in grafo.nodes))
+
+    
+    start = time.time()
+    status = solver.Solve()
+    cpu = time.time() - start
+
+    feasible = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
+    gamma = int(round(solver.Objective().Value())) if feasible else None
+    
+    classes, rep = [], []
+
+    for u in grafo.nodes:
+        if x[u, u].solution_value() > 0.5:
+            cor = [u]
+            rep.append(u)
+            for v in grafo.nodes:
+                if v not in grafo.adj[u] and u < v:
+                    if x[u, v].solution_value() > 0.5:
+                        cor.append(v)
+            classes.append(cor)
+
+    # Sort color classes by the ordering encoded in y.
+    for _ in range(len(classes)):
+        for j in range(len(classes) - 1, 0, -1):
+            if y[rep[j - 1], rep[j]].solution_value() < 0.5:
+                rep[j], rep[j - 1] = rep[j - 1], rep[j]
+                classes[j], classes[j - 1] = classes[j - 1], classes[j]
+
+    
+    valid = is_greedy_coloring(G, classes) if classes else False
+
+    return {
+        "model":   "carvalho_representante",
+        "gamma":     gamma,
+        "optimal": status == pywraplp.Solver.OPTIMAL,
+        "cpu_s":   cpu,
+        "classes": classes,
+        "valid":   valid,
+    }
+
+    
+    # status = solver.Solve()
+
+    
+    # if status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
+    #     num_colors = math.floor(solver.Objective().Value() + 0.5)
+    #     C, rep = [], []
+
+    #     for u in grafo.nodes:
+    #         if x[u, u].solution_value() > 0.5:
+    #             cor = [u]
+    #             rep.append(u)
+    #             for v in grafo.nodes:
+    #                 if v not in grafo.adj[u] and u < v:
+    #                     if x[u, v].solution_value() > 0.5:
+    #                         cor.append(v)
+    #             C.append(cor)
+
+    #     # Sort color classes by the ordering encoded in y.
+    #     for _ in range(len(C)):
+    #         for j in range(len(C) - 1, 0, -1):
+    #             if y[rep[j - 1], rep[j]].solution_value() < 0.5:
+    #                 rep[j], rep[j - 1] = rep[j - 1], rep[j]
+    #                 C[j], C[j - 1] = C[j - 1], C[j]
+
+    #     return status == pywraplp.Solver.OPTIMAL, num_colors, C, solver.nodes()
+
+    # print('Sem solução ótima.')
+    # return None, None, None, None
+
 
 
 # ---------------------------------------------------------------------------
@@ -1060,18 +1860,31 @@ if __name__ == "__main__":
         ("BB/FSF",  branch3),
     ]
 
-    G = nx.erdos_renyi_graph(15, 0.2, seed=42)
+    G = nx.erdos_renyi_graph(15, 0.5, seed=1)
 
-    print("=== Correctness tests ===")
-    run_correctness_tests(solvers)
+    
+    r = branch_and_bound3(G, stair_factor)
+    print(r)
 
-    print("=== Performance tests ===")
-    run_performance_tests(solvers)
+    r = solver_rodrigues(G, stair_factor(G))
+    print(r)
 
-    print("=== Enumerate orders (small graph) ===")
-    G_small = nx.erdos_renyi_graph(8, 0.2, seed=1)
-    bf_count = counting_grundy_colorings(G_small)
-    eo_set   = enumerate_orders(G_small)
-    print(f"Brute-force count : {bf_count}")
-    print(f"enumerate_orders  : {len(eo_set)}")
-    print(f"Match             : {bf_count == len(eo_set)}")
+    r = solver_carvalho(G, stair_factor(G))
+    print(r)
+
+    r = solver_carvalho_modificado(G, stair_factor(G))
+    print(r)
+
+
+
+    #print("=== Correctness tests ===")
+    #run_correctness_tests(solvers)
+    #print("=== Performance tests ===")
+    #run_performance_tests(solvers)
+    #print("=== Enumerate orders (small graph) ===")
+    #G_small = nx.erdos_renyi_graph(8, 0.2, seed=1)
+    #bf_count = counting_grundy_colorings(G_small)
+    #eo_set   = enumerate_orders(G_small)
+    #print(f"Brute-force count : {bf_count}")
+    #print(f"enumerate_orders  : {len(eo_set)}")
+    #print(f"Match             : {bf_count == len(eo_set)}")
