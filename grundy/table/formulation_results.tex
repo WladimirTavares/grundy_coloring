@@ -1,0 +1,44 @@
+\documentclass[11pt]{article}
+
+% ── Pacotes essenciais ─────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{amssymb}
+\usepackage{siunitx}
+\usepackage{graphicx}
+
+\geometry{margin=2.5cm}
+
+% Configuração do siunitx (alinhamento numérico)
+\sisetup{
+    round-mode=places,
+    round-precision=3,
+    table-number-alignment=center
+}
+
+\title{Resultados Experimentais do Grundy Coloring}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{Resultados}
+
+A Tabela~\ref{tab:grundy} apresenta os resultados experimentais obtidos
+para diferentes instâncias de grafos e algoritmos.
+
+\begin{table}[ht]
+\centering
+\caption{Desempenho dos algoritmos para o Grundy Coloring}
+\label{tab:grundy}
+
+\input{formulation.tex}
+
+\end{table}
+
+\end{document}
