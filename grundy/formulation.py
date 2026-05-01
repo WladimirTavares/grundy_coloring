@@ -506,23 +506,26 @@ def solver_carvalho_representante1(
     solver = pywraplp.Solver.CreateSolver('SCIP')
     solver.set_time_limit(time_limit)
 
+
+    nodes = sorted(grafo.nodes())
+
     # x[u, v] = 1  iff v is in the class represented by u (u <= v, u,v non-adjacent)
     # x[u, u] = 1  iff u is a representative (i.e., u heads a color class)
     x = {}
-    for u in grafo.nodes:
-        for v in grafo.nodes:
+    for u in nodes:
+        for v in nodes:
             if u <= v and v not in grafo.adj[u]:
                 x[u, v] = solver.IntVar(0, 1, f"x[{u},{v}]")
 
     # y[u, v] = 1  iff representative u precedes representative v in ordering
     y = {}
-    for v in grafo.nodes:
-        for u in grafo.nodes:
+    for v in nodes:
+        for u in nodes:
             if u != v:
                 y[u, v] = solver.IntVar(0, 1, f"y[{u},{v}]")
 
     # pot[v]: MTZ potential; pot[u] < pot[v] when y[u,v] = 1
-    pot = {v: solver.NumVar(0, upperbound, f"pot[{v}]") for v in grafo.nodes}
+    pot = {v: solver.NumVar(0, upperbound, f"pot[{v}]") for v in nodes}
 
     # (1) Clique constraint: within a color class (independent set), no two
     #     members v, w of the same class u can be adjacent to each other.
@@ -537,9 +540,9 @@ def solver_carvalho_representante1(
 
     # (2) Coverage: every vertex v belongs to exactly one color class.
     #     The representative u of v's class satisfies u <= v and u ≁ v.
-    for u in grafo.nodes:
+    for u in nodes:
         solver.Add(
-            solver.Sum(x[v, u] for v in grafo.nodes
+            solver.Sum(x[v, u] for v in nodes
                        if v not in grafo.adj[u] and v <= u) == 1
         )
 
@@ -547,10 +550,10 @@ def solver_carvalho_representante1(
     #     other representative p, either p comes after u (y[p,u]=0), or p's
     #     class has a neighbour of v.  This ensures every color < color(u)
     #     is witnessed by a neighbour of v.
-    for u in grafo.nodes:
-        for p in grafo.nodes:
+    for u in nodes:
+        for p in nodes:
             if p != u:
-                for v in grafo.nodes:
+                for v in nodes:
                     if v not in grafo.adj[u] and u <= v:
                         solver.Add(
                             x[u, v] <= solver.Sum(
@@ -563,9 +566,9 @@ def solver_carvalho_representante1(
 
     # (4) Membership validity: a vertex v can only be in class u if u is a
     #     representative (x[u,u] = 1).
-    for u in grafo.nodes:
-        for v in grafo.nodes:
-            if v not in grafo.adj[u] and u <= v:
+    for u in nodes:
+        for v in nodes:
+            if v not in grafo.adj[u] and u < v:
                 solver.Add(x[u, v] <= x[u, u])
 
     # (5) Total ordering lower bound: if both u and v are representatives,
@@ -581,14 +584,14 @@ def solver_carvalho_representante1(
     #     - MTZ: if y[u,v]=1 then pot[u] < pot[v]  (pot[u] - pot[v] + 1 <= 0).
     #       When y[u,v]=0 the constraint relaxes to pot[u]-pot[v]+1 <= upperbound,
     #       which is always satisfied given pot ∈ [0, upperbound].
-    for u in grafo.nodes:
-        for v in grafo.nodes:
+    for u in nodes:
+        for v in nodes:
             if u != v:
                 solver.Add(y[v, u] + y[u, v] <= x[u, u])
                 solver.Add(pot[u] - pot[v] + 1 <= upperbound * (1 - y[u, v]))
 
     # Objective: maximize the number of representatives = number of color classes.
-    solver.Maximize(solver.Sum(x[v, v] for v in grafo.nodes))
+    solver.Maximize(solver.Sum(x[v, v] for v in nodes))
 
     lp_val = get_linear_relaxation(solver)
 
@@ -2127,7 +2130,7 @@ def solver_carvalho_representante7(
     # (5) Total ordering lower bound.
     for u in nodes:
         for v in nodes:
-            if u != v:
+            if u < v:
                 solver.Add(y[v, u] + y[u, v] >= x[u, u] + x[v, v] - 1)
 
     # (6) Consistency + MTZ big-M ordering.
@@ -2196,8 +2199,197 @@ def solver_carvalho_representante7(
 
 
 
+def repr_formulation(
+    grafo: nx.Graph,
+    vertex_ordering : bool = True,
+    phi_bound_constraint : bool = True,
+    predecessor_bound_constraint : bool = True,
+    time_limit: int = 600,
+) -> dict:
+    """
+    Variables
+    ---------
+    x[u, v] : binary
+        1 iff v is in the class represented by u, with pos[u] <= pos[v].
+    y[u, v] : binary
+        1 iff representative u precedes representative v in the Grundy order.
+    phi[v]  : continuous in [0, upperbound-1]
+        MTZ potential encoding the position of v's class in the Grundy order.
 
-def run_performance_tests(solvers: list) -> str:
+    Parameters
+    ----------
+    grafo : nx.Graph
+        Input graph.
+    order : list[int]
+        A permutation of V(G) used to restrict representative assignments.
+        Typically produced by :func:`smallest_last_ordering`.
+    upperbound : int
+        Upper bound on Γ(G), used as big-M in the MTZ constraints and as the
+        domain ceiling for phi.
+    time_limit : int, optional
+        Solver time limit in seconds.
+
+    Returns
+    -------
+    dict
+        Keys: ``"model", "gamma", "optimal", "cpu_s", "classes", "valid",
+        "linear_relaxation", "nodes_explored", "n_variables",
+        "n_constraints", "lp_gap"``.
+    """
+    nodes  = list(grafo.nodes)
+    n      = len(nodes)
+
+    if vertex_ordering:
+        order = smallest_last_ordering(grafo)
+    else:
+        order = sorted(grafo.nodes())
+
+    upperbound = upper_bound1(grafo)
+
+
+
+    pos    = {v: i for i, v in enumerate(order)}
+    adj    = {u: set(grafo.adj[u]) for u in nodes}
+
+    # antiG[u]    : non-neighbours of u (candidates to share u's class)
+    # antiGcol[u] : antiG[u] ∪ {u}  (u can also represent itself)
+    # anti_set[u] : set version of antiGcol[u] for O(1) membership tests
+    antiG    = {u: [v for v in nodes if v != u and v not in adj[u]] for u in nodes}
+    antiGcol = {u: antiG[u] + [u] for u in nodes}
+    anti_set = {u: set(antiGcol[u]) for u in nodes}
+
+    solver = pywraplp.Solver.CreateSolver('SCIP')
+    solver.set_time_limit(time_limit*1000)
+
+    x = {}
+    for i, u in enumerate(order):
+        for j in range(i, len(order)):
+            v = order[j]
+            if v == u or v in antiG[u]:
+                x[u, v] = solver.IntVar(0, 1, f"x[{u},{v}]")
+
+    y   = {(u, v): solver.IntVar(0, 1, f"y[{u},{v}]")
+           for u in nodes for v in nodes if u != v}
+    phi = {v: solver.NumVar(0, upperbound-1, f"phi[{v}]") for v in nodes}
+
+    solver.Maximize(solver.Sum(x[v, v] for v in nodes if (v, v) in x))
+
+    # (1) Membership validity.
+    for (u, v) in x:
+        if u != v:
+            solver.Add(x[u, v] <= x[u, u])
+
+    # (2) Clique cut within each class (independent set constraint).
+    for u in grafo.nodes:
+        for v in grafo.nodes:
+            for w in grafo.nodes:
+                if (v not in grafo.adj[u] and w not in grafo.adj[u]
+                        and (v, w) in grafo.edges and pos[u] <= pos[v] and pos[v] < pos[w]):
+                    solver.Add(x[u, v] + x[u, w] <= x[u, u])
+
+
+
+    # (3) Coverage: every vertex belongs to exactly one class.
+    for v in nodes:
+        cover = [x[u, v] for u in antiG[v] if (u, v) in x]
+        cover.append(x[v, v])
+        solver.Add(solver.Sum(cover) == 1)
+
+    # (4) Grundy property: every predecessor class covers a neighbour of v.
+    for u in nodes:
+        for p in nodes:
+            if pos[p] != pos[u]:
+                for v in nodes:
+                    if v not in grafo.adj[u] and pos[u] <= pos[v]:
+                        solver.Add(
+                            x[u, v] <= solver.Sum(
+                                x[p, w] for w in grafo.nodes
+                                if w in grafo.adj[v]
+                                and w not in grafo.adj[p]
+                                and pos[w] >= pos[p]
+                            ) + 1 - y[p, u]
+                        )
+
+
+    # (5) Total ordering lower bound.
+    for u in nodes:
+        for v in nodes:
+            if u < v:
+                solver.Add(y[v, u] + y[u, v] >= x[u, u] + x[v, v] - 1)
+
+    # (6) Consistency + MTZ big-M ordering.
+    for u in nodes:
+        for v in nodes:
+            if u != v:
+                solver.Add(y[u, v] + y[v, u] <= x[u, u])
+                solver.Add(phi[u] - phi[v] + 1 <= upperbound * (1 - y[u, v]))
+    
+                
+    # Compute per-vertex psi bounds: K[v] = min(U, psi(v))
+    table = psi_table(grafo, delta_1(grafo))
+    K = {}
+    for v in nodes:
+        K[v] = min(upperbound, table[v])
+
+
+    if phi_bound_constraint:
+        for v in nodes:
+            solver.Add(phi[v] <= (K[v]-1)*x[v,v])
+
+    if predecessor_bound_constraint:
+        for v in nodes:
+            solver.Add(
+                solver.Sum(y[p, v] for p in nodes if p != v) <= K[v]-1
+            )
+
+    lp_val = get_linear_relaxation(solver)
+    start  = time.time()
+    status = solver.Solve()
+    cpu    = time.time() - start
+
+    feasible = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
+    gamma    = int(round(solver.Objective().Value())) if feasible else None
+
+    classes, rep = [], []
+    if feasible:
+        for u in nodes:
+            if (u, u) in x and x[u, u].solution_value() > 0.5:
+                cor = [u]; rep.append(u)
+                for v in nodes:
+                    if v != u and (u, v) in x and x[u, v].solution_value() > 0.5:
+                        cor.append(v)
+                classes.append(cor)
+        # Bubble-sort classes by the y ordering among representatives.
+        for _ in range(len(classes)):
+            for j in range(len(classes) - 1, 0, -1):
+                if y[rep[j - 1], rep[j]].solution_value() < 0.5:
+                    rep[j], rep[j - 1]         = rep[j - 1], rep[j]
+                    classes[j], classes[j - 1] = classes[j - 1], classes[j]
+
+    valid  = is_greedy_coloring(grafo, classes) if classes else False
+    lp_gap = (lp_val - gamma) / lp_val if (feasible and gamma and lp_val > 0) else None
+
+    return {
+        "model":             "representant",
+        "gamma":             gamma,
+        "optimal":           status == pywraplp.Solver.OPTIMAL,
+        "cpu_s":             cpu,
+        "classes":           classes,
+        "valid":             valid,
+        "linear_relaxation": lp_val,
+        "nodes_explored":    solver.nodes(),
+        "n_variables":       solver.NumVariables(),
+        "n_constraints":     solver.NumConstraints(),
+        "lp_gap":            lp_gap,
+    }
+
+
+
+
+
+
+
+def run_performance_tests() -> str:
     """
     Executa testes de desempenho sobre um conjunto de solvers para o número
     de Grundy e produz uma tabela LaTeX comparativa.
@@ -2347,22 +2539,378 @@ def run_performance_tests(solvers: list) -> str:
     latex.append("}")
     return "\n".join(latex)
 
+def _crown(n):
+    """K_{n,n} minus a perfect matching. Γ = n."""
+    G = nx.complete_bipartite_graph(n, n)
+    G.remove_edges_from([(i, n + i) for i in range(n)])
+    return nx.convert_node_labels_to_integers(G)
+
+def _friendship(k):
+    """k triangles sharing a single central vertex."""
+    G = nx.Graph()
+    node = 1
+    for _ in range(k):
+        a, b = node, node + 1
+        G.add_edges_from([(0, a), (0, b), (a, b)])
+        node += 2
+    return G
+
+def _gem():
+    """P_4 + one vertex adjacent to all path vertices. Γ=4."""
+    return nx.Graph([(0, 1), (1, 2), (2, 3), (3, 4),
+                        (4, 0), (1, 3), (1, 4)])
+
+def _kite():
+    """K_4 minus one edge, plus a pendant. Γ=4."""
+    return nx.Graph([(0, 1), (1, 2), (2, 3), (3, 0), (0, 2), (3, 4)])
+
+def _house():
+    """C_4 with a triangular 'roof'. Γ=4."""
+    return nx.Graph([(0, 1), (1, 2), (2, 3), (3, 0),
+                        (0, 2), (2, 4), (3, 4)])
+
+
+def run_correctness_tests() -> list:
+    """Test a list of solvers on instances with known Grundy numbers.
+
+    Runs each solver on a fixed battery of 19 graphs (paths, cycles, complete
+    graphs, bipartite graphs, and Erdős–Rényi random graphs) and prints a
+    formatted table comparing the results.
+
+    Parameters
+    ----------
+    solvers : list of (str, callable, callable, callable | None)
+        Each entry is a 4-tuple ``(name, solver_fn, ub_fn, order_fn)``:
+
+        * **name** – display name for the column header.
+        * **solver_fn** – the solver function to call.
+        * **ub_fn** – upper-bound function passed to the solver.
+        * **order_fn** – if not ``None``, called on G to produce a vertex
+          ordering passed as the first positional argument to *solver_fn*.
+
+    Returns
+    -------
+    list
+        Raw results list of ``(name, G, chi_exp, results)`` for further
+        inspection or post-processing.
+
+    Notes
+    -----
+    A test is marked **OK** (✓) if all solvers agree on the Grundy number,
+    the number matches the expected value (when known), and all returned
+    colorings pass :func:`is_greedy_coloring`.
+    
+    References
+    ----------
+    The expected Grundy values come from the following sources:
+ 
+    * **Complete graphs K_n**: Γ(K_n) = n (trivial).
+    * **Paths P_n**: Γ(P_n) = 3 for n ≥ 4, Γ(P_2)=2, Γ(P_3)=2.
+      [Christen & Selkow, 1979]
+    * **Cycles C_n**: Γ(C_n) = 2 if n=4, else 3 for all n ≥ 3.
+      [Folklore; verified by brute force]
+    * **Complete bipartite K_{m,n}**: Γ(K_{m,n}) = 2 for all m,n ≥ 1.
+      [Wikipedia: "complete bipartite graphs are the only connected
+       graphs whose Grundy number is two"]
+    * **Crown graphs S_n^0 (K_{n,n} minus matching)**: Γ(crown(n)) = n.
+      [Wikipedia: Grundy number article, crown graph section]
+    * **Stars K_{1,n}**: Γ(K_{1,n}) = 2 for all n ≥ 1.
+      [Immediate: one vertex adjacent to all others; max 2 colors]
+    * **Hypercubes Q_k**: Γ(Q_1)=2, Γ(Q_2)=2, Γ(Q_3)=4, Γ(Q_4)=5.
+      [Hoffman & Johnson Jr. (1999); verified brute-force for Q_3]
+    * **Grid graphs P_m □ P_n**: Γ(2×2)=2, Γ(2×3)=4, Γ(3×3)=4.
+      [Effantin & Kheddouci (2007), n-dimensional meshes result]
+    * **Wheels W_n = K_1 + C_{n-1}**: Γ(W_5)=3, Γ(W_6..W_9)=4.
+      [Brute-force verified]
+    * **Ladder graphs L_n (P_2 □ P_n)**: Γ(L_4)=4.
+      [Brute-force verified]
+    * **Petersen graph**: Γ=4.
+      [Computational, standard benchmark; Silva et al. 2024]
+    * **Mycielski graphs**: Γ(M_3)=3, Γ(M_4)=5.
+      [Computational benchmark; Silva et al. 2024]
+    * **Empty graph n vertices**: Γ=1 (all vertices get color 1).
+    * **Friendship/bowtie F_k (k triangles sharing a vertex)**:
+      Γ(F_2)=3, Γ(F_3)=3. [Brute-force verified]
+    * **Paw (K_3 + pendant)**: Γ=3. [Brute-force verified]
+    * **Diamond (K_4 - edge)**: Γ=3. [Brute-force verified]
+    * **Gem (P_4 + universal vertex)**: Γ=4. [Brute-force verified]
+    * **Kite**: Γ=4. [Brute-force verified]
+    * **House**: Γ=4. [Brute-force verified]
+    * **Lollipop Lol(3,2)**: Γ=3. [Brute-force verified]
+    * **Bull graph**: Γ=3. [Brute-force verified]
+    * **Chvátal graph**: Γ=5. [Sampling-verified; 12-vertex 4-regular]
+
+    """
+    
+ 
+ 
+    tests = [
+        # ── Trivial / degenerate ─────────────────────────────────────────────
+        ("Empty n=1",        nx.empty_graph(1),                    1),
+        ("Empty n=5",        nx.empty_graph(5),                    1),
+        ("K_2 (single edge)",nx.complete_graph(2),                 2),
+ 
+        # ── Complete graphs Γ(K_n)=n ─────────────────────────────────────────
+        ("Complete K_3",     nx.complete_graph(3),                 3),
+        ("Complete K_4",     nx.complete_graph(4),                 4),
+        ("Complete K_5",     nx.complete_graph(5),                 5),
+        ("Complete K_6",     nx.complete_graph(6),                 6),
+ 
+        # ── Paths Γ(P_n)=3 for n≥4 ───────────────────────────────────────────
+        ("Path P_2",         nx.path_graph(2),                     2),
+        ("Path P_3",         nx.path_graph(3),                     2),
+        ("Path P_4",         nx.path_graph(4),                     3),
+        ("Path P_5",         nx.path_graph(5),                     3),
+        ("Path P_6",         nx.path_graph(6),                     3),
+        ("Path P_7",         nx.path_graph(7),                     3),
+        ("Path P_10",        nx.path_graph(10),                    3),
+ 
+        # ── Cycles: Γ=2 only for C_4, else 3 ────────────────────────────────
+        ("Cycle C_3 (=K_3)", nx.cycle_graph(3),                    3),
+        ("Cycle C_4",        nx.cycle_graph(4),                    2),
+        ("Cycle C_5",        nx.cycle_graph(5),                    3),
+        ("Cycle C_6",        nx.cycle_graph(6),                    3),
+        ("Cycle C_7",        nx.cycle_graph(7),                    3),
+        ("Cycle C_8",        nx.cycle_graph(8),                    3),
+        ("Cycle C_11",       nx.cycle_graph(11),                   3),
+        #("Cycle C_20",       nx.cycle_graph(20),                   3),
+ 
+        # ── Stars Γ=2 for all K_{1,n} ────────────────────────────────────────
+        ("Star K_{1,3}",     nx.star_graph(3),                     2),
+        ("Star K_{1,4}",     nx.star_graph(4),                     2),
+        ("Star K_{1,7}",     nx.star_graph(7),                     2),
+ 
+        # ── Complete bipartite Γ=2 ───────────────────────────────────────────
+        ("Bipartite K_{2,3}",nx.complete_bipartite_graph(2, 3),    2),
+        ("Bipartite K_{3,3}",nx.complete_bipartite_graph(3, 3),    2),
+        ("Bipartite K_{4,4}",nx.complete_bipartite_graph(4, 4),    2),
+        #("Bipartite K_{5,5}",nx.complete_bipartite_graph(5, 5),    2),
+ 
+        # ── Crown graphs Γ(crown(n))=n ───────────────────────────────────────
+        ("Crown S_2",        _crown(2),                            2),
+        ("Crown S_3",        _crown(3),                            3),
+        ("Crown S_4",        _crown(4),                            4),
+        ("Crown S_5",        _crown(5),                            5),
+ 
+        # ── Hypercubes ───────────────────────────────────────────────────────
+        ("Hypercube Q_2",    nx.hypercube_graph(2),                2),
+        ("Hypercube Q_3",    nx.hypercube_graph(3),                4),
+        ("Hypercube Q_4",    nx.hypercube_graph(4),                5),
+ 
+        # ── Grid graphs (2D meshes) ───────────────────────────────────────────
+        ("Grid 2x2",         nx.grid_2d_graph(2, 2),              2),
+        ("Grid 2x3",         nx.grid_2d_graph(2, 3),              4),
+        ("Grid 3x3",         nx.grid_2d_graph(3, 3),              4),
+ 
+        # ── Ladder graphs (P_2 □ P_n) ────────────────────────────────────────
+        ("Ladder L_4",       nx.ladder_graph(4),                   4),
+ 
+        # ── Wheel graphs W_n = K_1 + C_{n-1} ────────────────────────────────
+        ("Wheel W_5",        nx.wheel_graph(5),                    3),
+        ("Wheel W_6",        nx.wheel_graph(6),                    4),
+        ("Wheel W_7",        nx.wheel_graph(7),                    4),
+        ("Wheel W_8",        nx.wheel_graph(8),                    4),
+ 
+        # ── Small named graphs (brute-force verified) ─────────────────────────
+        ("Paw (K_3+leaf)",
+         nx.Graph([(0,1),(1,2),(2,0),(0,3)]),                      3),
+        ("Diamond (K_4-e)",
+         nx.Graph([(0,1),(1,2),(2,0),(0,3),(1,3)]),                3),
+        ("Gem",              _gem(),                               4),
+        ("Kite",             _kite(),                              4),
+        ("House",            _house(),                             4),
+        ("Bull",             nx.bull_graph(),                      3),
+        ("Lollipop(3,2)",    nx.lollipop_graph(3, 2),             3),
+        ("Friendship F_2",   _friendship(2),                       3),
+        ("Friendship F_3",   _friendship(3),                       3),
+ 
+        # ── Named benchmark graphs ────────────────────────────────────────────
+        ("Petersen",         nx.petersen_graph(),                  4),
+        ("Chvátal",          nx.chvatal_graph(),                   5),
+        ("Mycielski χ=3",    nx.mycielski_graph(3),               3),
+        ("Mycielski χ=4",    nx.mycielski_graph(4),               5),
+ 
+    ]
+ 
+    W           = 26
+    model_names = ["repr" + str(i) for i in range(1<<3)]
+    hdr = (f"{'Graph':<{W}} {'Γ':>4} "
+           + " ".join(f"{m:>10}" for m in model_names)
+           + f" {'Valid':>6} {'OK':>4}")
+    print(hdr)
+    print("─" * len(hdr))
+
+    total, passed = 0, 0
+    all_results   = []
+
+    for name, G, chi_exp in tests:
+        results, chis, valids = [], [], []
+        for mask in range(1<<3):
+            
+            vertex_ordering = bool(mask & 1)
+            phi_bound_constraint = bool(mask & 2)
+            predecessor_bound_constraint = bool(mask & 4)
+            
+            #print("vertex_ordering ", vertex_ordering)
+            #print("phi ", phi_bound_constraint)
+            #print("predecessor  ", predecessor_bound_constraint)
+            
+
+            r = repr_formulation(
+                G, 
+                vertex_ordering, 
+                phi_bound_constraint, 
+                predecessor_bound_constraint, 
+            )
+
+            #print(r)
+            
+            
+            results.append(r)
+            chis.append(r["gamma"])
+            valids.append(r["valid"])
+
+        agree     = all(c == chis[0] for c in chis)
+        correct   = (chi_exp is None) or (chis[0] == chi_exp)
+        valid_all = all(valids)
+        ok        = agree and correct and valid_all
+        total    += 1
+        if ok:
+            passed += 1
+
+        exp_s   = str(chi_exp) if chi_exp else "?"
+        chi_str = " ".join(f"{c:>10}" for c in chis)
+        print(f"{name:<{W}} {exp_s:>4} {chi_str} "
+              f"{'✓' if valid_all else '✗':>6} {'✓' if ok else '✗':>4}")
+        all_results.append((name, G, chi_exp, results))
+
+    print("─" * len(hdr))
+    print(f"Result: {passed}/{total} tests passed\n")
+    return all_results
+
+
+def run_performance_tests() -> None:
+    """Benchmark a list of solvers on larger instances and print a timing table.
+
+    Runs each solver on a fixed set of graphs ranging from 10 to 30 vertices
+    (Petersen, hypercube, Mycielski, and Erdős–Rényi at several densities)
+    and prints wall-clock times in a formatted table.
+
+    Parameters
+    ----------
+    solvers : list of (str, callable, callable, callable | None)
+        Same format as :func:`run_correctness_tests`.
+
+    Notes
+    -----
+    The Grundy number reported in each row is taken from the first solver in
+    the list; all solvers are assumed to agree (verified by
+    :func:`run_correctness_tests`).
+    """
+
+
+    perf = [
+        
+        ("ER n=10 p=0.1",  nx.erdos_renyi_graph(10, 0.1, seed=1)),
+        ("ER n=10 p=0.2",  nx.erdos_renyi_graph(10, 0.2, seed=2)),
+        ("ER n=10 p=0.3",  nx.erdos_renyi_graph(10, 0.3, seed=3)),
+        ("ER n=10 p=0.4",  nx.erdos_renyi_graph(10, 0.4, seed=4)),
+        ("ER n=10 p=0.5",  nx.erdos_renyi_graph(10, 0.5, seed=5)),
+        ("ER n=10 p=0.6",  nx.erdos_renyi_graph(10, 0.6, seed=6)),
+        ("ER n=10 p=0.7",  nx.erdos_renyi_graph(10, 0.7, seed=7)),
+        ("ER n=10 p=0.8",  nx.erdos_renyi_graph(10, 0.8, seed=8)),
+        ("ER n=10 p=0.9",  nx.erdos_renyi_graph(10, 0.9, seed=9)),
+        
+
+        ("ER n=15 p=0.1",  nx.erdos_renyi_graph(15, 0.1, seed=1)),
+        ("ER n=15 p=0.2",  nx.erdos_renyi_graph(15, 0.2, seed=2)),
+        ("ER n=15 p=0.3",  nx.erdos_renyi_graph(15, 0.3, seed=3)),
+        ("ER n=15 p=0.4",  nx.erdos_renyi_graph(15, 0.4, seed=4)),
+        ("ER n=15 p=0.5",  nx.erdos_renyi_graph(15, 0.5, seed=5)),
+        ("ER n=15 p=0.6",  nx.erdos_renyi_graph(15, 0.6, seed=6)),
+        ("ER n=15 p=0.7",  nx.erdos_renyi_graph(15, 0.7, seed=7)),
+        ("ER n=15 p=0.8",  nx.erdos_renyi_graph(15, 0.8, seed=8)),
+        ("ER n=15 p=0.9",  nx.erdos_renyi_graph(15, 0.9, seed=9)),
+        
+        ("ER n=20 p=0.1",  nx.erdos_renyi_graph(20, 0.1, seed=1)),
+        ("ER n=20 p=0.2",  nx.erdos_renyi_graph(20, 0.2, seed=2)),
+        ("ER n=20 p=0.3",  nx.erdos_renyi_graph(20, 0.3, seed=3)),
+        ("ER n=20 p=0.4",  nx.erdos_renyi_graph(20, 0.4, seed=4)),
+        ("ER n=20 p=0.5",  nx.erdos_renyi_graph(20, 0.5, seed=5)),
+        ("ER n=20 p=0.6",  nx.erdos_renyi_graph(20, 0.6, seed=6)),
+        ("ER n=20 p=0.7",  nx.erdos_renyi_graph(20, 0.7, seed=7)),
+        ("ER n=20 p=0.8",  nx.erdos_renyi_graph(20, 0.8, seed=8)),
+        ("ER n=20 p=0.9",  nx.erdos_renyi_graph(20, 0.9, seed=9)),
+        
+        ("ER n=25 p=0.1",  nx.erdos_renyi_graph(25, 0.1, seed=1)),
+        ("ER n=25 p=0.2",  nx.erdos_renyi_graph(25, 0.2, seed=2)),
+        ("ER n=25 p=0.3",  nx.erdos_renyi_graph(25, 0.3, seed=3)),
+        ("ER n=25 p=0.4",  nx.erdos_renyi_graph(25, 0.4, seed=4)),
+        ("ER n=25 p=0.5",  nx.erdos_renyi_graph(25, 0.5, seed=5)),
+        ("ER n=25 p=0.6",  nx.erdos_renyi_graph(25, 0.6, seed=6)),
+        ("ER n=25 p=0.7",  nx.erdos_renyi_graph(25, 0.7, seed=7)),
+        ("ER n=25 p=0.8",  nx.erdos_renyi_graph(25, 0.8, seed=8)),
+        ("ER n=25 p=0.9",  nx.erdos_renyi_graph(25, 0.9, seed=9)),
+    ]    
+
+    W           = 22
+    model_names = ["rep" + str(i) for i in range(1<<3) ]
+    hdr = (f"{'Graph':<{W}} {'Γ':>4} "
+           + " ".join(f"{m:>12}" for m in model_names))
+    print(hdr)
+    print("─" * len(hdr))
+
+    for name, G in perf:
+        row_results = []
+        for mask in range(1<<3):
+            
+            vertex_ordering = bool(mask & 1)
+            phi_bound_constraint = bool(mask & 2)
+            predecessor_bound_constraint = bool(mask & 4)
+            
+            #print("vertex_ordering ", vertex_ordering)
+            #print("phi ", phi_bound_constraint)
+            #print("predecessor  ", predecessor_bound_constraint)
+            
+
+            r = repr_formulation(
+                G, 
+                vertex_ordering, 
+                phi_bound_constraint, 
+                predecessor_bound_constraint, 
+            )
+    
+            row_results.append(r)
+        gamma = row_results[0]["gamma"]
+
+        valid = all( r["gamma"] == row_results[0]["gamma"] for r in row_results)
+        times = " ".join(f"{r['cpu_s']:>11.3f}s" for r in row_results)
+        print(f"{name:<{W}} {gamma:>4} {times}" f"{'✓' if valid else '✗':>6}" )
 
 
 if __name__ == "__main__":
 
-    solvers = [
-        ("rep1", solver_carvalho_representante1,   upper_bound1, None),
-        ("rep2", solver_carvalho_representante2,   upper_bound1, smallest_last_ordering),    
-        ("rep3", solver_carvalho_representante3,   upper_bound1, smallest_last_ordering),
-        ("rep4", solver_carvalho_representante4,   upper_bound1, smallest_last_ordering),    
-        #("rep5", solver_carvalho_representante5,   upper_bound1, smallest_last_ordering),
-        ("rep6", solver_carvalho_representante6,   upper_bound1, smallest_last_ordering),
-        ("rep7", solver_carvalho_representante6,   upper_bound1, smallest_last_ordering),    
-    ]
-    
-    print("=== Performance tests ===")
-    latex_code = run_performance_tests(solvers)
+    #run_correctness_tests()
+    run_performance_tests()
 
-    with open("./table/formulation.tex", "w") as f:
-        f.write(latex_code)
+    G = nx.erdos_renyi_graph(15, 0.5, 1)
+
+    print( 
+        repr_formulation(
+        G,
+        vertex_ordering=False,
+        phi_bound_constraint=False,
+        predecessor_bound_constraint=False,
+        time_limit=600 # segundos
+        )
+    )
+
+    print( 
+        repr_formulation(
+        G,
+        vertex_ordering=True,
+        phi_bound_constraint=True,
+        predecessor_bound_constraint=True,
+        time_limit=600 # segundos
+        )
+    )

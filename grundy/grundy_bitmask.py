@@ -8,6 +8,7 @@ from formulation import solver_carvalho_representante2
 from vertex_ordering import smallest_last_ordering
 from upper_bound import upper_bound1
 from lower_bound import lb_reverse_lf, lb_reverse_sl
+import math
 
 def create_bit_graph(G : nx.Graph):
     nodes = sorted(G.nodes())
@@ -60,7 +61,7 @@ def expand(non_adj: list, R: int, P: int, X: int):
         P &= ~(1 << v)
         X |= (1 << v)
 
-def delta_max(adj : list, S: int) -> int:
+def delta_1_bitmask(adj : list, S: int) -> int:
         """Grau máximo Δ(G[S]) do subgrafo induzido por S."""
         max_deg = 0
         T = S
@@ -70,13 +71,16 @@ def delta_max(adj : list, S: int) -> int:
             deg    = bin(adj[v] & S).count('1')   # grau de v em G[S]
             if deg > max_deg:
                 max_deg = deg
-        return max_deg
+        return max_deg + 1
 
 
 
 
 
-def bb_bitmask(G: nx.Graph):
+def bb_bitmask1(
+        G: nx.Graph,
+        time_limit = math.inf
+):
     nodes = sorted(G.nodes())
     n     = len(nodes)
 
@@ -92,16 +96,20 @@ def bb_bitmask(G: nx.Graph):
     LB    = max(lb1["lower_bound"], lb2["lower_bound"])
     bestC = lb1["coloring"] if lb1["lower_bound"] >= lb2["lower_bound"] else lb2["coloring"]
     
-
+    start = time.time()
+    deadline = start + time_limit
 
 
     def solve(S: int) -> int:
-        nonlocal bb_nodes, LB, bestC, pruned
+        nonlocal bb_nodes, LB, bestC, pruned, deadline
         
+        if time.time () > deadline:
+            return 0
+
+
         
         if S == 0:
             if len(C) > LB:
-                print(C)
                 LB    = len(C)
                 bestC = C.copy()
             return len(C)
@@ -113,7 +121,7 @@ def bb_bitmask(G: nx.Graph):
                 pruned += 1
                 return 0
 
-            if len(C) + delta_max(adj, S) + 1 <= LB:
+            if len(C) + delta_1_bitmask(adj, S) <= LB:
                 pruned += 1
                 return 0
 
@@ -135,7 +143,8 @@ def bb_bitmask(G: nx.Graph):
     solve(FULL)
 
     #tracemalloc.start()
-    start = time.time()
+    #start = time.time()
+
     best  = solve(FULL)
     end   = time.time()
     #current, peak = tracemalloc.get_traced_memory()
@@ -208,7 +217,11 @@ def expand2(non_adj: list, R: int, P: int, X: int):
 
 
 
-def bb_bitmask2(G: nx.Graph):
+def bb_bitmask2(
+        G: nx.Graph,
+        time_limit = math.inf
+):
+
     nodes = sorted(G.nodes())
     n     = len(nodes)
 
@@ -225,15 +238,20 @@ def bb_bitmask2(G: nx.Graph):
     bestC = lb1["coloring"] if lb1["lower_bound"] >= lb2["lower_bound"] else lb2["coloring"]
     
 
+    start = time.time()
+    deadline = start + time_limit
 
 
     def solve(S: int) -> int:
-        nonlocal bb_nodes, LB, bestC, pruned
+        nonlocal bb_nodes, LB, bestC, pruned, deadline
+
+        if time.time () > deadline:
+            return 0
         
         
         if S == 0:
             if len(C) > LB:
-                print(C)
+                #print(C)
                 LB    = len(C)
                 bestC = C.copy()
             return len(C)
@@ -245,7 +263,7 @@ def bb_bitmask2(G: nx.Graph):
                 pruned += 1
                 return 0
 
-            if len(C) + delta_max(adj, S) + 1 <= LB:
+            if len(C) + delta_1_bitmask(adj, S)  <= LB:
                 pruned += 1
                 return 0
 
@@ -267,7 +285,8 @@ def bb_bitmask2(G: nx.Graph):
     solve(FULL)
 
     #tracemalloc.start()
-    start = time.time()
+    #start = time.time()
+    
     best  = solve(FULL)
     end   = time.time()
     #current, peak = tracemalloc.get_traced_memory()
@@ -419,7 +438,10 @@ def delta_2_mask(adj: list[int], S: int) -> int:
     return max_val + 1
 
 
-def bb_bitmask3(G: nx.Graph):
+def bb_bitmask3(
+    G: nx.Graph,
+    time_limit : int = math.inf
+):
     nodes = sorted(G.nodes())
     n     = len(nodes)
 
@@ -435,16 +457,21 @@ def bb_bitmask3(G: nx.Graph):
     LB    = max(lb1["lower_bound"], lb2["lower_bound"])
     bestC = lb1["coloring"] if lb1["lower_bound"] >= lb2["lower_bound"] else lb2["coloring"]
     
+    start = time.time()
+    deadline = start + time_limit
 
 
 
     def solve(S: int) -> int:
         nonlocal bb_nodes, LB, bestC, pruned
+
+        if time.time () > deadline:
+            return 0
         
         
         if S == 0:
             if len(C) > LB:
-                print(C)
+                #print(C)
                 LB    = len(C)
                 bestC = C.copy()
             return len(C)
@@ -456,7 +483,7 @@ def bb_bitmask3(G: nx.Graph):
                 pruned += 1
                 return 0
 
-            if len(C) + delta_max(adj, S) + 1 <= LB:
+            if len(C) + delta_1_bitmask(adj, S) <= LB:
                 pruned += 1
                 return 0
 
@@ -481,7 +508,7 @@ def bb_bitmask3(G: nx.Graph):
     solve(FULL)
 
     #tracemalloc.start()
-    start = time.time()
+    #start = time.time()
     best  = solve(FULL)
     end   = time.time()
     #current, peak = tracemalloc.get_traced_memory()
@@ -510,7 +537,10 @@ def bb_bitmask3(G: nx.Graph):
     }
 
 
-def bb_bitmask4(G: nx.Graph):
+def bb_bitmask4(
+    G: nx.Graph,
+    time_limit : int = math.inf   
+):
     nodes = sorted(G.nodes())
     n     = len(nodes)
 
@@ -526,16 +556,21 @@ def bb_bitmask4(G: nx.Graph):
     LB    = max(lb1["lower_bound"], lb2["lower_bound"])
     bestC = lb1["coloring"] if lb1["lower_bound"] >= lb2["lower_bound"] else lb2["coloring"]
     
+    start = time.time()
+    deadline = start + time_limit
 
 
 
     def solve(S: int) -> int:
-        nonlocal bb_nodes, LB, bestC, pruned
-        
+        nonlocal bb_nodes, LB, bestC, pruned, deadline
+
+        if time.time () > deadline:
+            return 0
+    
         
         if S == 0:
             if len(C) > LB:
-                print(C)
+                #print(C)
                 LB    = len(C)
                 bestC = C.copy()
             return len(C)
@@ -547,7 +582,7 @@ def bb_bitmask4(G: nx.Graph):
                 pruned += 1
                 return 0
 
-            if len(C) + delta_max(adj, S) + 1 <= LB:
+            if len(C) + delta_1_bitmask(adj, S) <= LB:
                 pruned += 1
                 return 0
 
@@ -576,7 +611,8 @@ def bb_bitmask4(G: nx.Graph):
     solve(FULL)
 
     #tracemalloc.start()
-    start = time.time()
+    #start = time.time()
+
     best  = solve(FULL)
     end   = time.time()
     #current, peak = tracemalloc.get_traced_memory()
@@ -608,90 +644,23 @@ def bb_bitmask4(G: nx.Graph):
 
 
 from upper_bound import stair_factor, delta_2
-
+from bb import branch_and_bound
 
 if __name__ == "__main__":
 
+    G = nx.erdos_renyi_graph(20, 0.5, 1)
     
-    # for i in range(3000):
-    #     if i % 100 == 0:
-    #         print(i)
-    #     G = nx.erdos_renyi_graph(200, 0.5, i)
-        
-    #     sf1 = delta_2(G)
-        
-
-
-    #     adj, non_adj = create_bit_graph(G)
-    #     n = len(G.nodes())
-    #     FULL = (1 << n) - 1  # bitmask com todos os n vértices ativos
-    
-    #     sf2 = delta_2_mask(adj, FULL)
-
-    #     if sf1 != sf2:
-    #         print("ERRO")
+    print( branch_and_bound(G))
+    print( bb_bitmask1(G))
+    print( bb_bitmask2(G))
+    print( bb_bitmask3(G))
+    print( bb_bitmask4(G))
     
     
-
-    # for i in range(1000):
-    #     G = nx.erdos_renyi_graph(25, 0.5, 1)
-    #     H = nx.complement(G)
-
-    #     stables = list(nx.find_cliques(H))
-
-    #     s1 = len(stables)
-
-
-    #     adj, non_adj = create_bit_graph(G)
-    #     n = len(G.nodes())
-    #     FULL = (1 << n) - 1  # bitmask com todos os n vértices ativos
-    
-    #     stables2 = expand(non_adj, 0, FULL, 0)
-
-    #     s2 = len(list(stables2))
-
-    #     stables3 = expand2(non_adj, 0, FULL, 0)
-
-    #     s3 = len(list(stables3))
-
-    #     #print("s1", s1, "s2", s2, "s3", s3)
-
-    #     if s2 != s1 or s3 != s1:
-    #         print("ERRO")
-
+    print( branch_and_bound(G, 20))
+    print( bb_bitmask1(G, 20))
+    print( bb_bitmask2(G, 20))
+    print( bb_bitmask3(G, 20))
+    print( bb_bitmask4(G, 20))
     
 
-    #print( branch_and_bound(G) )
-
-    
-    #print( bb_bitmask(G) )
-    
-    G = nx.erdos_renyi_graph(25, 0.5, 4)
-
-    print( solver_carvalho_representante2(G, smallest_last_ordering(G), upper_bound1(G)) )
-
-
-    print( bb_bitmask2(G) )
-
-    print( bb_bitmask3(G) )
-    
-    print( bb_bitmask4(G) )
-    
-
-    # for i in range(3000):
-    #     if i % 100 == 0:
-    #         print(i)
-    #     G = nx.erdos_renyi_graph(200, 0.5, i)
-        
-    #     sf1 = stair_factor(G)
-        
-
-
-    #     adj, non_adj = create_bit_graph(G)
-    #     n = len(G.nodes())
-    #     FULL = (1 << n) - 1  # bitmask com todos os n vértices ativos
-    
-    #     sf2 = stair_factor_mask(adj, FULL)
-
-    #     if sf1 != sf2:
-    #         print("ERRO")

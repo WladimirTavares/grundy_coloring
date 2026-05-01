@@ -136,9 +136,11 @@ def find_cliques(G: nx.Graph, nodes: Optional[list] = None):
 # Branch-and-bound solvers  (generic + three specialised variants)
 # ---------------------------------------------------------------------------
 
+from upper_bound import delta_1, delta_2, fast_stair_factor
+
 def branch_and_bound(
     G: nx.Graph,
-    ub_func: Callable[[nx.Graph], int] = fast_stair_factor,
+    time_limit = math.inf
 ) -> dict:
     """Compute Γ(G) via branch-and-bound with in-place graph mutation.
 
@@ -182,16 +184,38 @@ def branch_and_bound(
     LB    = max(lb1["lower_bound"], lb2["lower_bound"])
     bestC = lb1["coloring"] if lb1["lower_bound"] >= lb2["lower_bound"] else lb2["coloring"]
     bb_nodes = 0
+    pruned = 0
+    deadline = time.time() + time_limit
 
     def expand(H: nx.Graph, C: list[list]) -> None:
-        nonlocal LB, bb_nodes, bestC
+        nonlocal LB, bb_nodes, bestC, pruned
+        
+        if time.time () > deadline:
+            return 
+
         if len(H) == 0:
             if len(C) > LB:
                 LB    = len(C)
                 bestC = C
             return
-        if len(C) + ub_func(H) <= LB:
+        
+        if len(C) + len(H.nodes()) <= LB:
+            pruned += 1
+            return 
+        
+        if len(C) + delta_1(G) <= LB:
+            pruned += 1
+            return 
+
+        if len(C) + delta_2(H) <= LB:
+            pruned += 1
             return
+        
+        if len(C) + fast_stair_factor(H) <= LB:
+            pruned += 1
+            return
+        
+
         bb_nodes += 1
         Hc = nx.complement(H)
         for clique in find_cliques(Hc):
@@ -210,11 +234,13 @@ def branch_and_bound(
         "classes":  bestC,
         "valid":    is_greedy_coloring(G, bestC),
         "bb_nodes": bb_nodes,
+        "pruned":       pruned,
+
     }
 
 
 if __name__ == "__main__":
 
-    G = nx.erdos_renyi_graph(15, 0.5, 1)
+    G = nx.erdos_renyi_graph(25, 0.5, 1)
 
-    print( branch_and_bound(G) )
+    print( branch_and_bound(G, 5) )
