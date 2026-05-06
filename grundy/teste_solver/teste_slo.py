@@ -165,6 +165,7 @@ def run_experiment_v2(
             "n_nodes":                n,
             "n_edges":                G.number_of_edges(),
             "p":                      p,
+            "stair_factor":           sf,
             "heuristic_time":         t_val,
             "heuristic_relaxation":   r_val,
             "random_times":           rand_times,
@@ -201,189 +202,9 @@ def run_experiment_v2(
 
     return summary
 
-def get_linear_relaxation(solver):
-    """
-    Computes the LP relaxation value of a MIP model built with OR-Tools (pywraplp).
-
-    This function temporarily relaxes all integer variables (IntVar, BoolVar)
-    to continuous variables, solves the LP, retrieves the objective value,
-    and then restores the original integrality.
-
-    Parameters
-    ----------
-    solver : pywraplp.Solver
-        An OR-Tools solver instance (e.g., SCIP) already containing the model.
-
-    Returns
-    -------
-    float
-        Objective value of the linear relaxation.
-
-    Notes
-    -----
-    - This computes the LP relaxation at the root (not node-level relaxations).
-    - The solver state is restored after execution.
-    - Assumes the model has already been fully built before calling.
-    """
-
-    # guarda quais variáveis eram inteiras
-    integer_vars = []
-    for var in solver.variables():
-        if var.Integer():
-            integer_vars.append(var)
-            var.SetInteger(False)
-
-    # resolve a relaxação
-    status = solver.Solve()
-
-    if status not in (solver.OPTIMAL, solver.FEASIBLE):
-        lp_value = None
-    else:
-        lp_value = solver.Objective().Value()
-
-    # restaura integridade
-    for var in integer_vars:
-        var.SetInteger(True)
-
-    return lp_value
-
-from greedy_coloring import is_greedy_coloring
-import networkx as nx
-from ortools.sat.python import cp_model
-from ortools.linear_solver import pywraplp
-from upper_bound import upper_bound1
-
-
-def repr_formulation(
-    grafo: nx.Graph,
-    order: list[int],
-    time_limit: int = math.inf,
-) -> dict:
-    nodes  = list(grafo.nodes)
-    n      = len(nodes)
-    pos    = {v: i for i, v in enumerate(order)}
-    adj    = {u: set(grafo.adj[u]) for u in nodes}
-
-    upperbound = upper_bound1(grafo)
-
-    # antiG[u]    : non-neighbours of u (candidates to share u's class)
-    # antiGcol[u] : antiG[u] ∪ {u}  (u can also represent itself)
-    # anti_set[u] : set version of antiGcol[u] for O(1) membership tests
-    antiG    = {u: [v for v in nodes if v != u and v not in adj[u]] for u in nodes}
-    antiGcol = {u: antiG[u] + [u] for u in nodes}
-    anti_set = {u: set(antiGcol[u]) for u in nodes}
-
-    # ------------------------------------------------------------------ #
-    # MIP (SCIP)                                                           #
-    # ------------------------------------------------------------------ #
-    solver = pywraplp.Solver.CreateSolver('SCIP')
-    solver.set_time_limit(time_limit)
-
-    x = {}
-    for i, u in enumerate(order):
-        for j in range(i, len(order)):
-            v = order[j]
-            if v == u or v in antiG[u]:
-                x[u, v] = solver.IntVar(0, 1, f"x[{u},{v}]")
-
-    y   = {(u, v): solver.IntVar(0, 1, f"y[{u},{v}]")
-           for u in nodes for v in nodes if u != v}
-    phi = {v: solver.NumVar(0, upperbound-1, f"phi[{v}]") for v in nodes}
-
-    solver.Maximize(solver.Sum(x[v, v] for v in nodes if (v, v) in x))
-
-    # (1) Membership validity.
-    for (u, v) in x:
-        if u != v:
-            solver.Add(x[u, v] <= x[u, u])
-
-    # (2) Clique cut within each class (independent set constraint).
-    for u in nodes:
-        pu = pos[u]
-        for v in antiG[u]:
-            pv = pos[v]
-            if pv <= pu:
-                continue
-            for w in antiG[u]:
-                pw = pos[w]
-                if pw <= pv:
-                    continue
-                if w in adj[v] and (u, v) in x and (u, w) in x:
-                    solver.Add(x[u, v] + x[u, w] <= x[u, u])
-
-    # (3) Coverage: every vertex belongs to exactly one class.
-    for v in nodes:
-        cover = [x[u, v] for u in antiG[v] if (u, v) in x]
-        cover.append(x[v, v])
-        solver.Add(solver.Sum(cover) == 1)
-
-    # (4) Grundy property: every predecessor class covers a neighbour of v.
-    for (u, v) in x:
-        for p in nodes:
-            if p == u:
-                continue
-            nbrs = solver.Sum(
-                x[p, w] for w in adj[v]
-                if w in anti_set[p] and (p, w) in x
-            )
-            solver.Add(x[u, v] <= nbrs + 1 - y[p, u])
-
-    # (5) Total ordering lower bound.
-    for u in nodes:
-        for v in nodes:
-            if u < v:
-                solver.Add(y[v, u] + y[u, v] >= x[u, u] + x[v, v] - 1)
-
-    # (6) Consistency + MTZ big-M ordering.
-    for u in nodes:
-        for v in nodes:
-            if u != v:
-                solver.Add(y[u, v] + y[v, u] <= x[u, u])
-                solver.Add(phi[u] - phi[v] + 1 <= upperbound * (1 - y[u, v]))
-    lp_val = get_linear_relaxation(solver)
-
-    start  = time.time()
-    status = solver.Solve()
-    cpu    = time.time() - start
-
-    feasible = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
-    gamma    = int(round(solver.Objective().Value())) if feasible else None
-
-    classes, rep = [], []
-    if feasible:
-        for u in nodes:
-            if (u, u) in x and x[u, u].solution_value() > 0.5:
-                cor = [u]; rep.append(u)
-                for v in nodes:
-                    if v != u and (u, v) in x and x[u, v].solution_value() > 0.5:
-                        cor.append(v)
-                classes.append(cor)
-        # Bubble-sort classes by the y ordering among representatives.
-        for _ in range(len(classes)):
-            for j in range(len(classes) - 1, 0, -1):
-                if y[rep[j - 1], rep[j]].solution_value() < 0.5:
-                    rep[j], rep[j - 1]         = rep[j - 1], rep[j]
-                    classes[j], classes[j - 1] = classes[j - 1], classes[j]
-
-    valid  = is_greedy_coloring(grafo, classes) if classes else False
-    lp_gap = (lp_val - gamma) / lp_val if (feasible and gamma and lp_val > 0) else None
-
-    return {
-        "model":             "rep with order",
-        "gamma":             gamma,
-        "optimal":           status == pywraplp.Solver.OPTIMAL,
-        "cpu_s":             cpu,
-        "classes":           classes,
-        "valid":             valid,
-        "linear_relaxation": lp_val,
-        "nodes_explored":    solver.nodes(),
-        "n_constraints":     solver.NumConstraints(),
-        "lp_gap":            lp_gap,
-    }
-
 
 def run_experiment_v3(
-        heuristic
+    heuristic_function,
     num_graphs: int = 50,
     n: int = 50,
     p: float = 0.5,
@@ -396,6 +217,9 @@ def run_experiment_v3(
 ):
     import networkx as nx
 
+    assert solver_fn is not None
+    assert stair_factor_fn is not None
+    assert sample_permutations_fn is not None
 
     pathlib.Path(save_dir).mkdir(parents=True, exist_ok=True)
 
@@ -409,10 +233,10 @@ def run_experiment_v3(
     for i in range(num_graphs):
         G     = nx.erdos_renyi_graph(n, p)
         nodes = list(G.nodes())
-        U    = upper_bound1(G)
+        sf    = stair_factor_fn(G)
 
         # --- heurística ---
-        r_h   = solver_fn(G, heuristic_function(G))
+        r_h   = solver_fn(G, heuristic_function(G), sf)
         t_val = r_h["cpu_s"]
         r_val = r_h["linear_relaxation"]
         h_nodes  = r_h.get("nodes_explored", None)
@@ -1128,69 +952,6 @@ def plot_focused(filepath: str, save_dir: str = "plots", show: bool = True):
     return {"plot_A": fname_t, "plot_B": fname_r, "plot_C": fname_c}
 
 
-# ---------------------------------------------------------------------------
-# Uso rápido para teste com dados mockados
-# ---------------------------------------------------------------------------
-
-def _demo_with_mock_data():
-    """Executa as visualizações com dados sintéticos (sem solver)."""
-    rng = np.random.default_rng(42)
-    n_graphs = 50
-    k_perms  = 200
-
-    records = []
-    for i in range(n_graphs):
-        rand_times = rng.exponential(scale=2.0, size=k_perms).tolist()
-        heur_time  = rng.exponential(scale=0.15)                # muito mais rápido
-        rand_relax = rng.normal(loc=8.0, scale=1.5, size=k_perms).tolist()
-        heur_relax = rng.normal(loc=8.0, scale=1.5)             # sem diferença
-
-        perc_t = percentile_lower_is_better(rand_times, heur_time)
-        perc_r = percentile_higher_is_better(rand_relax, heur_relax)
-
-        records.append({
-            "graph_index":           i,
-            "n_nodes":               50,
-            "n_edges":               int(rng.integers(200, 400)),
-            "p":                     0.5,
-            "stair_factor":          10,
-            "heuristic_time":        float(heur_time),
-            "heuristic_relaxation":  float(heur_relax),
-            "random_times":          rand_times,
-            "random_relaxations":    rand_relax,
-            "percentile_time":       perc_t,
-            "percentile_relaxation": perc_r,
-        })
-
-    perc_t_all = [r["percentile_time"]       for r in records]
-    perc_r_all = [r["percentile_relaxation"] for r in records]
-
-    summary = {
-        "experiment_tag":        "DEMO_mock",
-        "timestamp":             datetime.now().isoformat(),
-        "params":                {"num_graphs": n_graphs, "n": 50, "p": 0.5, "k_perms": k_perms},
-        "mean_percentile_time":  float(np.mean(perc_t_all)),
-        "mean_percentile_relax": float(np.mean(perc_r_all)),
-        "std_percentile_time":   float(np.std(perc_t_all)),
-        "std_percentile_relax":  float(np.std(perc_r_all)),
-        "pearson_corr":          float(pearsonr(perc_t_all, perc_r_all)[0]),
-        "spearman_corr":         float(spearmanr(perc_t_all, perc_r_all)[0]),
-        "records":               records,
-    }
-
-    pathlib.Path("results").mkdir(exist_ok=True)
-    with open("results/demo_mock.json", "w") as f:
-        json.dump(summary, f, indent=2)
-
-    print("=== DEMO com dados mockados ===")
-    print(f"Percentil tempo médio:  {summary['mean_percentile_time']:.2f}%")
-    print(f"Percentil relax médio:  {summary['mean_percentile_relax']:.2f}%")
-    print(f"Correlação Pearson:     {summary['pearson_corr']:.4f}")
-    print()
-
-    plot_all_visualizations(summary, save_dir="plots", show=False)
-    plot_focused("results/demo_mock.json", save_dir="plots", show=True)
-
 
 if __name__ == "__main__":
-    _demo_with_mock_data()
+    

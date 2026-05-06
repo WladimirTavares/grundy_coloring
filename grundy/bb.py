@@ -155,9 +155,7 @@ def branch_and_bound(
     G : nx.Graph
         A simple undirected graph.  **The graph is modified in place during
         the search but is fully restored before the function returns.**
-    ub_func : callable, optional
-        Upper-bound function; defaults to :func:`fast_stair_factor`.
-
+    
     Returns
     -------
     dict

@@ -165,6 +165,7 @@ def run_experiment_v2(
             "n_nodes":                n,
             "n_edges":                G.number_of_edges(),
             "p":                      p,
+            "stair_factor":           sf,
             "heuristic_time":         t_val,
             "heuristic_relaxation":   r_val,
             "random_times":           rand_times,
@@ -257,7 +258,7 @@ from upper_bound import upper_bound1
 def repr_formulation(
     grafo: nx.Graph,
     order: list[int],
-    time_limit: int = math.inf,
+    time_limit_seconds = 600,
 ) -> dict:
     nodes  = list(grafo.nodes)
     n      = len(nodes)
@@ -277,7 +278,7 @@ def repr_formulation(
     # MIP (SCIP)                                                           #
     # ------------------------------------------------------------------ #
     solver = pywraplp.Solver.CreateSolver('SCIP')
-    solver.set_time_limit(time_limit)
+    solver.set_time_limit(int(time_limit_seconds * 1000))
 
     x = {}
     for i, u in enumerate(order):
@@ -382,8 +383,41 @@ def repr_formulation(
     }
 
 
+def sample_permutations(nodes: list, k: int, seed: int = None):
+    """
+    Gera k permutações aleatórias da lista nodes.
+
+    Parâmetros
+    ----------
+    nodes : list
+        Lista de nós do grafo (e.g. list(G.nodes())).
+    k : int
+        Número de permutações a gerar.
+    seed : int, opcional
+        Semente base para reprodutibilidade. Cada permutação usa
+        seed + i internamente, garantindo diversidade e reprodutibilidade.
+        Se None, usa aleatoriedade do sistema.
+
+    Yields
+    ------
+    list
+        Uma permutação de nodes a cada iteração.
+
+    Exemplo
+    -------
+    >>> nodes = list(G.nodes())
+    >>> for perm in sample_permutations(nodes, k=500, seed=42):
+    ...     result = solver_fn(G, perm, sf)
+    """
+    nodes = list(nodes)           # cópia defensiva — não altera o original
+    for i in range(k):
+        rng  = random.Random(seed + i if seed is not None else None)
+        perm = nodes[:]           # cópia local para embaralhar
+        rng.shuffle(perm)
+        yield perm
+
 def run_experiment_v3(
-        heuristic
+    heuristic_function,
     num_graphs: int = 50,
     n: int = 50,
     p: float = 0.5,
@@ -394,140 +428,207 @@ def run_experiment_v3(
     stair_factor_fn=None,
     sample_permutations_fn=None,
 ):
-    import networkx as nx
+    """
+    Versao estendida com analise estatistica completa.
 
+    Para cada grafo e cada metrica (cpu_s, linear_relaxation, nodes_explored)
+    calcula, comparando a heuristica contra k_perms permutacoes aleatorias:
+
+        mu_rnd  : media das permutacoes aleatorias
+        sd_rnd  : desvio padrao das permutacoes aleatorias
+        min_rnd : minimo observado nas aleatorias
+        max_rnd : maximo observado nas aleatorias
+        z       : z-score = (mu_rnd - h) / sd_rnd  [positivo = heuristica melhor]
+        p_val   : p-valor empirico unilateral
+        sig     : *** / ** / * / ns
+        delta   : mu_rnd - h  [positivo = heuristica melhor para lower-is-better]
+
+    Ao final agrega por metrica (media dos delta, media dos z, Fisher p-valor).
+    """
+    import networkx as nx
+    import math as _math
+    from scipy.stats import chi2 as _chi2
+
+    assert sample_permutations_fn is not None, "Passe sample_permutations_fn"
 
     pathlib.Path(save_dir).mkdir(parents=True, exist_ok=True)
 
+    # ── configuracao das metricas ──────────────────────────────────────────
+    # (nome, chave_heuristica, chave_random, lower_is_better)
+    METRICS = [
+        ("cpu_s",             "heuristic_time",       "random_times",        True),
+        ("linear_relaxation", "heuristic_relaxation", "random_relaxations",  True),
+        ("nodes_explored",    "heuristic_nodes",      "random_nodes",        True),
+    ]
+
+    # ── helpers estatisticos ───────────────────────────────────────────────
+
+    def _metric_stats(h_val, rand_vals, lower_is_better):
+        valid = [v for v in rand_vals if v is not None and not _math.isnan(float(v))]
+        if not valid or h_val is None:
+            return None
+        mu  = float(np.mean(valid))
+        sd  = float(np.std(valid, ddof=1)) if len(valid) > 1 else 0.0
+        mn  = float(min(valid))
+        mx  = float(max(valid))
+        if sd > 0:
+            z = (mu - h_val) / sd if lower_is_better else (h_val - mu) / sd
+        else:
+            z = 0.0
+        if lower_is_better:
+            p_val = sum(1 for v in valid if v <= h_val) / len(valid)
+            delta = mu - h_val
+        else:
+            p_val = sum(1 for v in valid if v >= h_val) / len(valid)
+            delta = h_val - mu
+        sig = ("***" if p_val < 0.001 else
+               "** " if p_val < 0.01  else
+               "*  " if p_val < 0.05  else "ns ")
+        return {
+            "h_val": h_val, "mu": mu, "sd": sd,
+            "min": mn, "max": mx,
+            "z": z, "p_val": p_val, "sig": sig, "delta": delta,
+        }
+
+    def _fisher_p(p_values):
+        ps  = [max(p, 1e-10) for p in p_values]
+        chi = -2.0 * sum(_math.log(p) for p in ps)
+        return float(_chi2.sf(chi, df=2 * len(ps)))
+
+    # ── loop principal ─────────────────────────────────────────────────────
     records = []
-    percentis_time        = []
-    percentis_relaxation  = []
-    percentis_nodes       = []
-    percentis_nvars       = []
-    percentis_lp_gap      = []
+
+    hdr = (f"{'g':>3} {'metric':<20} {'h_val':>9} {'mu_rnd':>9} "
+           f"{'sd_rnd':>8} {'min':>8} {'max':>8} "
+           f"{'z':>7} {'p_val':>7} {'sig':>4} {'delta':>9}")
+    sep = "-" * len(hdr)
+    print(sep)
+    print(f"  CONFIG: n={n}, p={p} | {num_graphs} grafos x {k_perms} aleatorias")
+    print(sep)
+    print(hdr)
+    print(sep)
 
     for i in range(num_graphs):
         G     = nx.erdos_renyi_graph(n, p)
         nodes = list(G.nodes())
-        U    = upper_bound1(G)
+        
+        U = upper_bound1(G)
 
-        # --- heurística ---
-        r_h   = solver_fn(G, heuristic_function(G))
-        t_val = r_h["cpu_s"]
-        r_val = r_h["linear_relaxation"]
-        h_nodes  = r_h.get("nodes_explored", None)
-        h_nvars  = r_h.get("n_variables",    None)
-        h_ncons  = r_h.get("n_constraints",  None)
-        h_gap    = r_h.get("lp_gap",         None)
+        r_h = solver_fn(G, heuristic_function(G))
+        h_vals = {
+            "heuristic_time":       r_h.get("cpu_s"),
+            "heuristic_relaxation": r_h.get("linear_relaxation"),
+            "heuristic_nodes":      r_h.get("nodes_explored"),
+        }
 
-        # --- baseline aleatório ---
-        rand_times, rand_relax  = [], []
-        rand_nodes, rand_nvars  = [], []
-        rand_ncons, rand_gaps   = [], []
-
+        rand_buckets = {
+            "random_times":       [],
+            "random_relaxations": [],
+            "random_nodes":       [],
+        }
         for perm in sample_permutations_fn(nodes, k_perms):
-            r = solver_fn(G, perm, sf)
-            rand_times.append(r["cpu_s"])
-            rand_relax.append(r["linear_relaxation"])
-            rand_nodes.append(r.get("nodes_explored", None))
-            rand_nvars.append(r.get("n_variables",    None))
-            rand_ncons.append(r.get("n_constraints",  None))
-            rand_gaps.append( r.get("lp_gap",         None))
-        
-        print("time ", t_val)
-        print("relax ", r_val)
-        print("nodes ", h_nodes)
-        print("nvars ", h_nvars)
-        print("ncons ", h_ncons)
-        print("gaps ", h_gap)
+            r = solver_fn(G, perm)
+            rand_buckets["random_times"].append(r.get("cpu_s"))
+            rand_buckets["random_relaxations"].append(r.get("linear_relaxation"))
+            rand_buckets["random_nodes"].append(r.get("nodes_explored"))
 
-        
-        print("rand_times", rand_times)
-        print("rand_relax", rand_relax)
-        print("rand_nodes", rand_nodes)
-        print("rand_nvars", rand_nvars)
-        print("rand_ncons", rand_ncons)
-        print("rand_gaps", rand_gaps)
+        metric_stats = {}
+        for name, h_key, r_key, lib in METRICS:
+            st = _metric_stats(h_vals[h_key], rand_buckets[r_key], lib)
+            metric_stats[name] = st
+            if st:
+                print(
+                    f"{i:>3} {name:<20} {st['h_val']:>9.4f} {st['mu']:>9.4f} "
+                    f"{st['sd']:>8.4f} {st['min']:>8.4f} {st['max']:>8.4f} "
+                    f"{st['z']:>7.3f} {st['p_val']:>7.4f} {st['sig']:>4} "
+                    f"{st['delta']:>+9.4f}"
+                )
+            else:
+                print(f"{i:>3} {name:<20} {'N/A':>9}")
+        print(sep)
 
-
-        
-        
-        
-        
-
-        # percentis principais
-        perc_t = percentile_lower_is_better(rand_times, t_val)
-        perc_r = percentile_lower_is_better(rand_relax, r_val)
-        percentis_time.append(perc_t)
-        percentis_relaxation.append(perc_r)
-
-        # percentis estruturais (só calcula se os dados existem)
-        perc_nodes = perc_nvars = perc_gap = None
-        if h_nodes is not None and all(v is not None for v in rand_nodes):
-            perc_nodes = percentile_lower_is_better(rand_nodes, h_nodes)
-            percentis_nodes.append(perc_nodes)
-        if h_nvars is not None and all(v is not None for v in rand_nvars):
-            perc_nvars = percentile_lower_is_better(rand_nvars, h_nvars)
-            percentis_nvars.append(perc_nvars)
-        if h_gap is not None and all(v is not None for v in rand_gaps):
-            perc_gap = percentile_lower_is_better(rand_gaps, h_gap)
-            percentis_lp_gap.append(perc_gap)
+        # compatibilidade com v2: percentile = p_val * 100
+        perc_t = metric_stats["cpu_s"]["p_val"] * 100 if metric_stats["cpu_s"] else None
+        perc_r = metric_stats["linear_relaxation"]["p_val"] * 100 if metric_stats["linear_relaxation"] else None
 
         record = {
-            "graph_index":           i,
-            "n_nodes":               n,
-            "n_edges":               G.number_of_edges(),
-            "p":                     p,
-            "stair_factor":          sf,
-            # heurística
-            "heuristic_time":        t_val,
-            "heuristic_relaxation":  r_val,
-            "heuristic_nodes":       h_nodes,
-            "heuristic_nvars":       h_nvars,
-            "heuristic_ncons":       h_ncons,
-            "heuristic_lp_gap":      h_gap,
-            # baseline
-            "random_times":          rand_times,
-            "random_relaxations":    rand_relax,
-            "random_nodes":          rand_nodes,
-            "random_nvars":          rand_nvars,
-            "random_ncons":          rand_ncons,
-            "random_lp_gaps":        rand_gaps,
-            # percentis
-            "percentile_time":       perc_t,
-            "percentile_relaxation": perc_r,
-            "percentile_nodes":      perc_nodes,
-            "percentile_nvars":      perc_nvars,
-            "percentile_lp_gap":     perc_gap,
+            "graph_index":          i,
+            "n_nodes":              n,
+            "n_edges":              G.number_of_edges(),
+            "p":                    p,
+            "heuristic_time":       h_vals["heuristic_time"],
+            "heuristic_relaxation": h_vals["heuristic_relaxation"],
+            "heuristic_nodes":      h_vals["heuristic_nodes"],
+            "random_times":         rand_buckets["random_times"],
+            "random_relaxations":   rand_buckets["random_relaxations"],
+            "random_nodes":         rand_buckets["random_nodes"],
+            "stats":                metric_stats,
+            "percentile_time":      perc_t,
+            "percentile_relaxation":perc_r,
         }
         records.append(record)
-        print(
-            f"  iter {i:03d} | "
-            f"perc_time={perc_t:6.2f}%  "
-            f"perc_relax={perc_r:6.2f}%  "
-            f"perc_nodes={perc_nodes!s:>6}%  "
-            f"perc_nvars={perc_nvars!s:>6}%  "
-            f"perc_gap={perc_gap!s:>6}%"
-        )
 
+    # ── resumo agregado ────────────────────────────────────────────────────
+    print(f"\n{'='*75}")
+    print(f"  RESUMO AGREGADO — {experiment_tag or heuristic_function.__name__}")
+    print(f"{'='*75}")
+    print(f"  {'metrica':<22} {'delta medio':>12} {'z medio':>8} "
+          f"{'%melhor':>8} {'Fisher p':>11} {'sig':>4}")
+    print(f"  {'-'*67}")
+
+    agg_stats = {}
+    for name, _, _, _ in METRICS:
+        per_graph = [r["stats"][name] for r in records if r["stats"].get(name)]
+        if not per_graph:
+            continue
+        deltas   = [s["delta"] for s in per_graph]
+        zs       = [s["z"]     for s in per_graph]
+        pvals    = [s["p_val"] for s in per_graph]
+        n_better = sum(1 for s in per_graph if s["delta"] > 0)
+
+        fisher_p = _fisher_p(pvals)
+        mean_d   = float(np.mean(deltas))
+        mean_z   = float(np.mean(zs))
+        frac_b   = n_better / len(per_graph) * 100
+
+        sig_f = ("***" if fisher_p < 0.001 else
+                 "** " if fisher_p < 0.01  else
+                 "*  " if fisher_p < 0.05  else "ns ")
+
+        print(f"  {name:<22} {mean_d:>+12.4f} {mean_z:>8.3f} "
+              f"{frac_b:>7.1f}% {fisher_p:>11.5f} {sig_f:>4}")
+
+        agg_stats[name] = {
+            "mean_delta": mean_d, "mean_z": mean_z,
+            "frac_better_pct": frac_b, "fisher_p": fisher_p,
+            "individual_pvals": pvals,
+        }
+
+    print(f"\n  Legenda: *** p<0.001  ** p<0.01  * p<0.05  ns=nao significativo")
+    print(f"  delta>0 = heuristica melhor que a media aleatoria")
+    print(f"  %melhor = fracao dos grafos onde heuristica superou a media aleatoria")
+    print(f"  Fisher p = combinacao dos p-valores individuais (metodo de Fisher)")
+
+    # ── serializar ────────────────────────────────────────────────────────
     def _mean_or_none(lst):
         lst = [v for v in lst if v is not None]
         return float(np.mean(lst)) if lst else None
 
+    perc_t_all = [r["percentile_time"]        for r in records if r["percentile_time"]        is not None]
+    perc_r_all = [r["percentile_relaxation"]  for r in records if r["percentile_relaxation"]  is not None]
+
     summary = {
-        "experiment_tag":            experiment_tag or heuristic_function.__name__,
-        "timestamp":                 datetime.now().isoformat(),
-        "params":                    {"num_graphs": num_graphs, "n": n, "p": p, "k_perms": k_perms},
-        "mean_percentile_time":      float(np.mean(percentis_time)),
-        "mean_percentile_relax":     float(np.mean(percentis_relaxation)),
-        "std_percentile_time":       float(np.std(percentis_time)),
-        "std_percentile_relax":      float(np.std(percentis_relaxation)),
-        "mean_percentile_nodes":     _mean_or_none(percentis_nodes),
-        "mean_percentile_nvars":     _mean_or_none(percentis_nvars),
-        "mean_percentile_lp_gap":    _mean_or_none(percentis_lp_gap),
-        "pearson_corr":              float(pearsonr(percentis_time, percentis_relaxation)[0]),
-        "spearman_corr":             float(spearmanr(percentis_time, percentis_relaxation)[0]),
-        "records":                   records,
+        "experiment_tag":         experiment_tag or heuristic_function.__name__,
+        "timestamp":              datetime.now().isoformat(),
+        "params":                 {"num_graphs": num_graphs, "n": n, "p": p, "k_perms": k_perms},
+        "mean_percentile_time":   _mean_or_none(perc_t_all),
+        "mean_percentile_relax":  _mean_or_none(perc_r_all),
+        "std_percentile_time":    float(np.std(perc_t_all))  if perc_t_all else None,
+        "std_percentile_relax":   float(np.std(perc_r_all))  if perc_r_all else None,
+        "pearson_corr":  float(pearsonr(perc_t_all,  perc_r_all)[0]) if len(perc_t_all) > 1 else None,
+        "spearman_corr": float(spearmanr(perc_t_all, perc_r_all)[0]) if len(perc_t_all) > 1 else None,
+        "aggregated_stats": agg_stats,
+        "records":          records,
     }
 
     tag   = experiment_tag or heuristic_function.__name__
@@ -537,14 +638,8 @@ def run_experiment_v3(
         json.dump(summary, f, indent=2)
 
     print(f"\nResultados salvos em: {fname}")
-    print(f"Percentil tempo médio:      {summary['mean_percentile_time']:.2f}%")
-    print(f"Percentil relaxação médio:  {summary['mean_percentile_relax']:.2f}%")
-    print(f"Percentil nós médio:        {summary['mean_percentile_nodes']}")
-    print(f"Percentil nvars médio:      {summary['mean_percentile_nvars']}")
-    print(f"Percentil lp_gap médio:     {summary['mean_percentile_lp_gap']}")
-    print(f"Correlação Pearson:         {summary['pearson_corr']:.4f}")
-
     return summary
+
 
 def load_results(filepath: str) -> dict:
     """Carrega um arquivo JSON salvo por run_experiment_v2."""
@@ -1192,5 +1287,72 @@ def _demo_with_mock_data():
     plot_focused("results/demo_mock.json", save_dir="plots", show=True)
 
 
+# def run_experiment_v3(
+#     heuristic_function,
+#     num_graphs: int = 50,
+#     n: int = 50,
+#     p: float = 0.5,
+#     k_perms: int = 200,
+#     save_dir: str = "results",
+#     experiment_tag: str = "",
+#     solver_fn=None,
+#     stair_factor_fn=None,
+#     sample_permutations_fn=None,
+# ):
+
+
+from vertex_ordering import smallest_last_ordering
 if __name__ == "__main__":
-    _demo_with_mock_data()
+    
+    n = 15
+    num_graphs = 5
+
+    run_experiment_v3(
+        heuristic_function=smallest_last_ordering,
+        num_graphs=num_graphs,
+        n=n,
+        p=0.1,
+        k_perms= 200,
+        solver_fn=repr_formulation,
+        sample_permutations_fn=sample_permutations
+    )
+
+    run_experiment_v3(
+        heuristic_function=smallest_last_ordering,
+        num_graphs=num_graphs,
+        n=n,
+        p=0.25,
+        k_perms= 200,
+        solver_fn=repr_formulation,
+        sample_permutations_fn=sample_permutations
+    )
+
+    run_experiment_v3(
+        heuristic_function=smallest_last_ordering,
+        num_graphs=num_graphs,
+        n=n,
+        p=0.5,
+        k_perms= 200,
+        solver_fn=repr_formulation,
+        sample_permutations_fn=sample_permutations
+    )
+
+    run_experiment_v3(
+        heuristic_function=smallest_last_ordering,
+        num_graphs=num_graphs,
+        n=n,
+        p=0.75,
+        k_perms= 200,
+        solver_fn=repr_formulation,
+        sample_permutations_fn=sample_permutations
+    )
+
+    run_experiment_v3(
+        heuristic_function=smallest_last_ordering,
+        num_graphs=num_graphs,
+        n=n,
+        p=0.9,
+        k_perms= 200,
+        solver_fn=repr_formulation,
+        sample_permutations_fn=sample_permutations
+    )

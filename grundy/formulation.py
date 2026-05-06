@@ -2384,6 +2384,214 @@ def repr_formulation(
     }
 
 
+from lower_bound import lb_reverse_lf, lb_reverse_sl
+from vertex_ordering import large_clique
+
+
+def repr_formulation2(
+    grafo: nx.Graph,
+    vertex_ordering : bool = True,
+    phi_bound_constraint : bool = True,
+    predecessor_bound_constraint : bool = True,
+    sum_phi_values_constraint : bool = True,
+    mtz_strengthening : bool = True,
+    time_limit: int = 600,
+) -> dict:
+    """
+    Variables
+    ---------
+    x[u, v] : binary
+        1 iff v is in the class represented by u, with pos[u] <= pos[v].
+    y[u, v] : binary
+        1 iff representative u precedes representative v in the Grundy order.
+    phi[v]  : continuous in [0, upperbound-1]
+        MTZ potential encoding the position of v's class in the Grundy order.
+
+    Parameters
+    ----------
+    grafo : nx.Graph
+        Input graph.
+    order : list[int]
+        A permutation of V(G) used to restrict representative assignments.
+        Typically produced by :func:`smallest_last_ordering`.
+    upperbound : int
+        Upper bound on Γ(G), used as big-M in the MTZ constraints and as the
+        domain ceiling for phi.
+    time_limit : int, optional
+        Solver time limit in seconds.
+
+    Returns
+    -------
+    dict
+        Keys: ``"model", "gamma", "optimal", "cpu_s", "classes", "valid",
+        "linear_relaxation", "nodes_explored", "n_variables",
+        "n_constraints", "lp_gap"``.
+    """
+    nodes  = list(grafo.nodes)
+    n      = len(nodes)
+
+    if vertex_ordering:
+        order = smallest_last_ordering(grafo)
+    else:
+        order = sorted(grafo.nodes())
+
+    upperbound = upper_bound1(grafo)
+
+
+
+    pos    = {v: i for i, v in enumerate(order)}
+    adj    = {u: set(grafo.adj[u]) for u in nodes}
+
+    # antiG[u]    : non-neighbours of u (candidates to share u's class)
+    # antiGcol[u] : antiG[u] ∪ {u}  (u can also represent itself)
+    # anti_set[u] : set version of antiGcol[u] for O(1) membership tests
+    antiG    = {u: [v for v in nodes if v != u and v not in adj[u]] for u in nodes}
+    antiGcol = {u: antiG[u] + [u] for u in nodes}
+    anti_set = {u: set(antiGcol[u]) for u in nodes}
+
+    solver = pywraplp.Solver.CreateSolver('SCIP')
+    solver.set_time_limit(time_limit*1000)
+
+    x = {}
+    for i, u in enumerate(order):
+        for j in range(i, len(order)):
+            v = order[j]
+            if v == u or v in antiG[u]:
+                x[u, v] = solver.IntVar(0, 1, f"x[{u},{v}]")
+
+    y   = {(u, v): solver.IntVar(0, 1, f"y[{u},{v}]")
+           for u in nodes for v in nodes if u != v}
+    phi = {v: solver.NumVar(0, upperbound-1, f"phi[{v}]") for v in nodes}
+
+    solver.Maximize(solver.Sum(x[v, v] for v in nodes if (v, v) in x))
+
+    # (1) Membership validity.
+    for (u, v) in x:
+        if u != v:
+            solver.Add(x[u, v] <= x[u, u])
+
+    # (2) Clique cut within each class (independent set constraint).
+    for u in grafo.nodes:
+        for v in grafo.nodes:
+            for w in grafo.nodes:
+                if (v not in grafo.adj[u] and w not in grafo.adj[u]
+                        and (v, w) in grafo.edges and pos[u] <= pos[v] and pos[v] < pos[w]):
+                    solver.Add(x[u, v] + x[u, w] <= x[u, u])
+
+
+
+    # (3) Coverage: every vertex belongs to exactly one class.
+    for v in nodes:
+        cover = [x[u, v] for u in antiG[v] if (u, v) in x]
+        cover.append(x[v, v])
+        solver.Add(solver.Sum(cover) == 1)
+
+    # (4) Grundy property: every predecessor class covers a neighbour of v.
+    for u in nodes:
+        for p in nodes:
+            if pos[p] != pos[u]:
+                for v in nodes:
+                    if v not in grafo.adj[u] and pos[u] <= pos[v]:
+                        solver.Add(
+                            x[u, v] <= solver.Sum(
+                                x[p, w] for w in grafo.nodes
+                                if w in grafo.adj[v]
+                                and w not in grafo.adj[p]
+                                and pos[w] >= pos[p]
+                            ) + 1 - y[p, u]
+                        )
+
+
+    # (5) Total ordering lower bound.
+    for u in nodes:
+        for v in nodes:
+            if u < v:
+                solver.Add(y[v, u] + y[u, v] >= x[u, u] + x[v, v] - 1)
+
+    # Compute per-vertex psi bounds: K[v] = min(U, psi(v))
+    table = psi_table(grafo, delta_1(grafo))
+    K = {}
+    for v in nodes:
+        K[v] = min(upperbound, table[v])
+
+
+    # (6) Consistency + MTZ big-M ordering.
+    for u in nodes:
+        for v in nodes:
+            if u != v:
+                solver.Add(y[u, v] + y[v, u] <= x[u, u])
+                
+                if mtz_strengthening:
+                    solver.Add(phi[u] - phi[v] + 1 <= K[u] * (1 - y[u, v]))
+                else:
+                    solver.Add(phi[u] - phi[v] + 1 <= upperbound * (1 - y[u, v]))
+    
+
+    if phi_bound_constraint:
+        for v in nodes:
+            solver.Add(phi[v] <= (K[v]-1)*x[v,v])
+
+    if predecessor_bound_constraint:
+        for v in nodes:
+            solver.Add(
+                solver.Sum(y[p, v] for p in nodes if p != v) <= K[v]-1
+            )
+
+    lb1 = lb_reverse_sl(grafo)["lower_bound"]
+    lb2 = lb_reverse_lf(grafo)["lower_bound"]
+
+    lb = lb1
+    if lb2 > lb:
+        lb = lb2
+
+    sum_labels = (lb*(lb-1))//2
+    
+    if sum_phi_values_constraint:
+        solver.Add( solver.Sum (phi[v] for v in nodes) >= sum_labels)    
+
+
+
+    lp_val = get_linear_relaxation(solver)
+    start  = time.time()
+    status = solver.Solve()
+    cpu    = time.time() - start
+
+    feasible = status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE)
+    gamma    = int(round(solver.Objective().Value())) if feasible else None
+
+    classes, rep = [], []
+    if feasible:
+        for u in nodes:
+            if (u, u) in x and x[u, u].solution_value() > 0.5:
+                cor = [u]; rep.append(u)
+                for v in nodes:
+                    if v != u and (u, v) in x and x[u, v].solution_value() > 0.5:
+                        cor.append(v)
+                classes.append(cor)
+        # Bubble-sort classes by the y ordering among representatives.
+        for _ in range(len(classes)):
+            for j in range(len(classes) - 1, 0, -1):
+                if y[rep[j - 1], rep[j]].solution_value() < 0.5:
+                    rep[j], rep[j - 1]         = rep[j - 1], rep[j]
+                    classes[j], classes[j - 1] = classes[j - 1], classes[j]
+
+    valid  = is_greedy_coloring(grafo, classes) if classes else False
+    lp_gap = (lp_val - gamma) / lp_val if (feasible and gamma and lp_val > 0) else None
+
+    return {
+        "model":             "representant",
+        "gamma":             gamma,
+        "optimal":           status == pywraplp.Solver.OPTIMAL,
+        "cpu_s":             cpu,
+        "classes":           classes,
+        "valid":             valid,
+        "linear_relaxation": lp_val,
+        "nodes_explored":    solver.nodes(),
+        "n_variables":       solver.NumVariables(),
+        "n_constraints":     solver.NumConstraints(),
+        "lp_gap":            lp_gap,
+    }
+
 
 
 
@@ -2733,7 +2941,7 @@ def run_correctness_tests() -> list:
     ]
  
     W           = 26
-    model_names = ["repr" + str(i) for i in range(1<<3)]
+    model_names = ["repr1"]
     hdr = (f"{'Graph':<{W}} {'Γ':>4} "
            + " ".join(f"{m:>10}" for m in model_names)
            + f" {'Valid':>6} {'OK':>4}")
@@ -2745,30 +2953,22 @@ def run_correctness_tests() -> list:
 
     for name, G, chi_exp in tests:
         results, chis, valids = [], [], []
-        for mask in range(1<<3):
             
-            vertex_ordering = bool(mask & 1)
-            phi_bound_constraint = bool(mask & 2)
-            predecessor_bound_constraint = bool(mask & 4)
             
-            #print("vertex_ordering ", vertex_ordering)
-            #print("phi ", phi_bound_constraint)
-            #print("predecessor  ", predecessor_bound_constraint)
-            
+        r = repr_formulation2(
+            G, 
+            vertex_ordering=True, 
+            phi_bound_constraint=True, 
+            predecessor_bound_constraint=True,
+            sum_phi_values_constraint=True,
+            mtz_strengthening=True 
+        )
 
-            r = repr_formulation(
-                G, 
-                vertex_ordering, 
-                phi_bound_constraint, 
-                predecessor_bound_constraint, 
-            )
-
-            #print(r)
-            
-            
-            results.append(r)
-            chis.append(r["gamma"])
-            valids.append(r["valid"])
+        
+        
+        results.append(r)
+        chis.append(r["gamma"])
+        valids.append(r["valid"])
 
         agree     = all(c == chis[0] for c in chis)
         correct   = (chi_exp is None) or (chis[0] == chi_exp)
@@ -2891,26 +3091,62 @@ def run_performance_tests() -> None:
 if __name__ == "__main__":
 
     #run_correctness_tests()
-    run_performance_tests()
-
-    G = nx.erdos_renyi_graph(15, 0.5, 1)
-
+    
+    
+    G = nx.erdos_renyi_graph(20, 0.25, 1)
+    
+    print("Modelo Base")
+    #Modelo Base
     print( 
-        repr_formulation(
+        repr_formulation2(
         G,
         vertex_ordering=False,
         phi_bound_constraint=False,
         predecessor_bound_constraint=False,
+        sum_phi_values_constraint=False,
+        mtz_strengthening=False,
         time_limit=600 # segundos
         )
     )
-
+    print("Modelo Base + restrições")
+    
+    #Modelo Base com restrições novas
     print( 
-        repr_formulation(
+        repr_formulation2(
         G,
-        vertex_ordering=True,
+        vertex_ordering=False,
         phi_bound_constraint=True,
         predecessor_bound_constraint=True,
+        sum_phi_values_constraint=True,
+        mtz_strengthening=True,
+        time_limit=600 # segundos
+        )
+    )
+    print("Modelo Base + ordenação SLO")
+    
+    # Modelo Base com a ordenação
+    print( 
+        repr_formulation2(
+        G,
+        vertex_ordering=True,
+        phi_bound_constraint=False, # O(n)
+        predecessor_bound_constraint=False, # O(n)
+        sum_phi_values_constraint = False, # O(1)
+        mtz_strengthening=False, #O(1)
+        time_limit=600 # segundos
+        )
+    )
+    print("Modelo Base + ordenação SLO + restrições")
+    
+    #Modelos Base com a ordenação + restrições
+    print( 
+        repr_formulation2(
+        G,
+        vertex_ordering=True,
+        phi_bound_constraint=True, # O(n)
+        predecessor_bound_constraint=True, # O(n)
+        sum_phi_values_constraint = False, # O(1)
+        mtz_strengthening=True, #O(1)
         time_limit=600 # segundos
         )
     )

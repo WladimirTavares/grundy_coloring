@@ -1,0 +1,464 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage[brazil]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{mdframed}
+\usepackage{mathtools}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\geometry{margin=2.5cm}
+
+\definecolor{azul}{RGB}{20,60,120}
+\definecolor{cinza}{RGB}{245,245,245}
+\definecolor{verde}{RGB}{30,130,70}
+\definecolor{vermelho}{RGB}{160,30,30}
+\definecolor{laranja}{RGB}{180,100,0}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textcolor{gray}{Teste Estatístico de Alinhamento Semântico}}
+\fancyhead[R]{\small\textcolor{gray}{SLO e a Coloração Grundy}}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\titleformat{\section}{\large\bfseries\color{azul}}{}{0em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries\color{azul!80}}{}{0em}{}
+
+\tcbuselibrary{skins,breakable}
+\newtcolorbox{definicao}[1]{
+  colback=azul!5, colframe=azul!50,
+  fonttitle=\bfseries\small, title=Definição: #1,
+  breakable, left=6pt, right=6pt
+}
+\newtcolorbox{intuicao}{
+  colback=verde!5, colframe=verde!50,
+  fonttitle=\bfseries\small, title=Intuição,
+  breakable, left=6pt, right=6pt
+}
+\newtcolorbox{atencao}{
+  colback=laranja!8, colframe=laranja!60,
+  fonttitle=\bfseries\small, title=Atenção,
+  breakable, left=6pt, right=6pt
+}
+\newtcolorbox{resultado}{
+  colback=verde!7, colframe=verde!60,
+  fonttitle=\bfseries\small, title=Resultado,
+  breakable, left=6pt, right=6pt
+}
+
+\newtheorem{proposicao}{Proposição}
+\newtheorem{observacao}{Observação}
+
+% ------------------------------------------------------------------
+\begin{document}
+
+\begin{center}
+  {\LARGE\bfseries\color{azul}
+    Validação Estatística do Alinhamento Semântico\\[4pt]
+    da \textit{Smallest-Last Ordering} (SLO)\\[6pt]
+    para a Coloração Grundy}\\[10pt]
+  {\normalsize Explicação pedagógica do teste de permutação\\
+  e sua relação com a escolha de ordenação na formulação de representantes}\\[4pt]
+  {\small \today}
+\end{center}
+
+\noindent\rule{\linewidth}{1pt}
+
+% ==================================================================
+\section{Contexto: por que a ordenação importa}
+
+Na formulação de programação inteira por representantes assimétricos
+para a Coloração Grundy, o conjunto de variáveis de decisão é indexado
+por
+\[
+  \mathcal{X} = \bigl\{(u,v) \;\big|\; v \in \overline{N}(u),\;
+  \sigma(u) \leq \sigma(v)\bigr\},
+\]
+onde $\sigma : V \to \{0,\ldots,n-1\}$ é uma ordem total sobre os
+vértices. Para cada aresta $\{u,v\} \in \overline{E}$, exatamente um
+dos pares $(u,v)$ ou $(v,u)$ pertence a $\mathcal{X}$: aquele em que
+o primeiro elemento tem menor $\sigma$. O vértice de menor $\sigma$
+em cada classe de cor é, portanto, o \emph{representante canônico}
+dessa classe no modelo.
+
+A hipótese de alinhamento semântico afirma:
+
+\begin{center}
+\itshape
+A SLO, ao atribuir índices menores a vértices de maior grau residual,
+posiciona como representantes canônicos exatamente os vértices que
+tendem a ser representantes nas soluções ótimas da Coloração Grundy.
+\end{center}
+
+Para testar essa hipótese de forma rigorosa, utilizamos um
+\textbf{teste de permutação}, descrito nas seções seguintes.
+
+% ==================================================================
+\section{A estatística de teste: rank médio normalizado}
+
+\subsection{Definição}
+
+Seja $G = (V,E)$ um grafo com $n$ vértices e seja $\text{OPT}(G)$ o
+conjunto de todas as colorações Grundy ótimas de $G$, isto é, aquelas
+que utilizam $\Gamma(G)$ cores. Para uma ordem $\sigma$ e uma coloração
+$C \in \text{OPT}(G)$ com classes $V_1^C, \ldots, V_{\Gamma}^C$,
+define-se o \emph{representante canônico} da classe $i$ como
+\[
+  r_i^C(\sigma) \;=\; \arg\min_{v \in V_i^C}\; \sigma(v).
+\]
+
+\begin{definicao}{Rank médio normalizado $\bar{r}(\sigma)$}
+O \emph{rank médio normalizado} da ordem $\sigma$ é
+\[
+  \bar{r}(\sigma) \;=\;
+  \frac{1}{|\text{OPT}(G)| \cdot \Gamma(G)}
+  \sum_{C \in \text{OPT}(G)} \sum_{i=1}^{\Gamma(G)} \sigma\!\left(r_i^C(\sigma)\right)
+  \;-\; \frac{\Gamma(G)-1}{2},
+\]
+onde o termo $(\Gamma(G)-1)/2$ é a normalização pelo melhor caso
+possível: se os $\Gamma(G)$ representantes ocupassem as posições
+$0, 1, \ldots, \Gamma(G)-1$, o rank médio bruto seria exatamente
+$(\Gamma(G)-1)/2$.
+\end{definicao}
+
+\begin{intuicao}
+$\bar{r}(\sigma) = 0$ significa que, em média sobre todas as soluções
+ótimas, os representantes canônicos ocupam as $\Gamma$ primeiras
+posições da ordem $\sigma$ — o melhor cenário possível.
+$\bar{r}(\sigma) > 0$ significa que os representantes estão, em média,
+deslocados para posições mais tardias.
+Valores menores de $\bar{r}(\sigma)$ indicam melhor alinhamento
+semântico da ordem $\sigma$ com a estrutura das soluções ótimas.
+\end{intuicao}
+
+\subsection{Por que não basta comparar com uma única ordem aleatória}
+
+Uma abordagem ingênua compararia $\bar{r}(\sigma_{\text{SLO}})$ com
+$\bar{r}(\sigma_{\text{rnd}})$ para uma única permutação aleatória
+$\sigma_{\text{rnd}}$. Essa abordagem é estatisticamente inadequada
+por duas razões:
+
+\begin{enumerate}
+  \item \textbf{Alta variância:} uma permutação aleatória pode por
+    acaso ser melhor ou pior que a SLO sem que isso reflita o
+    comportamento médio do acaso.
+  \item \textbf{Sem significância:} não é possível afirmar que a
+    diferença observada é sistemática ou fruto do acaso com apenas
+    um ponto de comparação.
+\end{enumerate}
+
+O correto é comparar $\bar{r}(\sigma_{\text{SLO}})$ com a
+\textbf{distribuição} de $\bar{r}(\sigma)$ quando $\sigma$ é amostrada
+uniformemente ao acaso.
+
+% ==================================================================
+\section{O teste de permutação}
+
+\subsection{Estrutura do teste}
+
+O teste de permutação é um método \textbf{não paramétrico}: não assume
+nenhuma distribuição paramétrica para a estatística de teste. Sua única
+hipótese é que, sob a hipótese nula, todas as permutações de $V$ são
+igualmente prováveis — o que é exatamente verdade quando $\sigma$ é
+amostrada uniformemente.
+
+\medskip
+\noindent O teste é estruturado em cinco passos:
+
+\begin{enumerate}[label=\textbf{Passo \arabic*.}, leftmargin=*, itemsep=6pt]
+
+  \item \textbf{Enumeração das soluções ótimas.}
+    Calcula-se $\Gamma(G)$ e enumera-se $\text{OPT}(G)$ por força bruta
+    (viável para $n \leq 9$, pois há $n!$ permutações a testar).
+
+  \item \textbf{Cálculo do valor observado.}
+    Computa-se $\bar{r}(\sigma_{\text{SLO}})$, a estatística de teste
+    para a SLO. Este é o valor que queremos avaliar.
+
+  \item \textbf{Construção da distribuição de referência.}
+    Geram-se $N$ permutações aleatórias $\sigma_1, \ldots, \sigma_N$
+    e calcula-se $\bar{r}(\sigma_k)$ para cada uma, obtendo a amostra
+    \[
+      \mathcal{R} = \{\bar{r}(\sigma_1), \ldots, \bar{r}(\sigma_N)\}.
+    \]
+    A média e o desvio padrão dessa amostra estimam o comportamento
+    médio do acaso:
+    \[
+      \mu_{\text{rnd}} = \frac{1}{N}\sum_{k=1}^N \bar{r}(\sigma_k),
+      \qquad
+      \sigma_{\text{rnd}} = \sqrt{\frac{1}{N-1}\sum_{k=1}^N
+      \bigl(\bar{r}(\sigma_k) - \mu_{\text{rnd}}\bigr)^2}.
+    \]
+
+  \item \textbf{Cálculo do p-valor empírico.}
+    O p-valor unilateral à esquerda é a fração de ordens aleatórias
+    que obtiveram resultado \emph{tão bom ou melhor} que a SLO:
+    \begin{equation}
+      \hat{p} \;=\;
+      \frac{\#\{k \in \{1,\ldots,N\} : \bar{r}(\sigma_k)
+      \leq \bar{r}(\sigma_{\text{SLO}})\}}{N}.
+      \label{eq:pval}
+    \end{equation}
+    Um p-valor pequeno indica que poucas ordens aleatórias conseguem
+    igualar ou superar a SLO — evidência de alinhamento semântico.
+
+  \item \textbf{Decisão estatística.}
+    Adota-se o critério convencional:
+    \[
+      \hat{p} < 0{,}05 \implies \text{rejeita-se } H_0
+      \quad (\text{resultado significativo}),
+    \]
+    onde $H_0$ é a hipótese nula de que a SLO não é melhor que o acaso.
+
+\end{enumerate}
+
+\subsection{Hipóteses do teste}
+
+\begin{align*}
+  H_0 &: \bar{r}(\sigma_{\text{SLO}}) \geq \mathbb{E}_\sigma[\bar{r}(\sigma)]
+       \quad\text{(SLO não é melhor que o acaso)}\\
+  H_1 &: \bar{r}(\sigma_{\text{SLO}}) < \mathbb{E}_\sigma[\bar{r}(\sigma)]
+       \quad\text{(SLO posiciona representantes mais cedo)}
+\end{align*}
+
+O teste é \textbf{unilateral à esquerda}: interessa apenas saber se a
+SLO é \emph{melhor} que o acaso, não se é diferente em qualquer direção.
+
+\subsection{Precisão do p-valor empírico}
+
+O p-valor empírico $\hat{p}$ é uma proporção amostral. Seu erro padrão
+é
+\[
+  \text{EP}(\hat{p}) = \sqrt{\frac{\hat{p}(1-\hat{p})}{N}}.
+\]
+Para $\hat{p} \approx 0{,}09$ (valor típico nos experimentos) e $N=500$:
+\[
+  \text{EP} = \sqrt{\frac{0{,}09 \times 0{,}91}{500}} \approx 0{,}013.
+\]
+Portanto, com $N=500$ amostras, o p-valor estimado tem precisão de
+$\pm 0{,}013$ — suficiente para distinguir valores próximos de $0{,}05$.
+\textbf{Aumentar $N$ além de 500 melhora a precisão, mas não altera o
+p-valor verdadeiro.}
+
+% ==================================================================
+\section{O z-score: medida contínua de separação}
+
+Independentemente do limiar de $0{,}05$, a separação entre a SLO e o
+acaso pode ser medida continuamente pelo \textbf{z-score}:
+\[
+  z \;=\; \frac{\mu_{\text{rnd}} - \bar{r}(\sigma_{\text{SLO}})}{\sigma_{\text{rnd}}}.
+\]
+O z-score mede quantos desvios padrão a SLO está abaixo da média
+aleatória. A correspondência com o p-valor (aproximação normal) é:
+\[
+  p \approx \Phi(-z) = 1 - \Phi(z),
+\]
+onde $\Phi$ é a função de distribuição acumulada normal padrão.
+
+\begin{center}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{ccc}
+\toprule
+$z$ & $p \approx \Phi(-z)$ & Interpretação \\
+\midrule
+$1{,}282$ & $0{,}10$ & Tendência \\
+$1{,}645$ & $0{,}05$ & Significativo ($*$) \\
+$2{,}326$ & $0{,}01$ & Altamente significativo ($**$) \\
+$3{,}090$ & $0{,}001$ & Muito altamente significativo ($***$) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ==================================================================
+\section{Resultados experimentais}
+
+Os experimentos foram conduzidos com grafos aleatórios de Erdős-Rényi
+$G(n,p)$ para $n=9$ e cinco densidades, com $N=500$ ordens aleatórias
+por grafo. A Tabela~\ref{tab:resultados} apresenta os resultados.
+
+\begin{table}[ht]
+\centering
+\caption{Resultados do teste de permutação para grafos $G(9, p)$.
+$\Gamma$: número de Grundy; $|\text{OPT}|$: número de soluções ótimas;
+$\bar{r}_{\text{SLO}}$: rank médio normalizado da SLO;
+$\mu_{\text{rnd}}$, $\sigma_{\text{rnd}}$: média e desvio padrão da
+distribuição aleatória ($N=500$);
+$\hat{p}$: p-valor empírico; $z$: z-score; $\Delta = \mu_{\text{rnd}} -
+\bar{r}_{\text{SLO}}$.}
+\label{tab:resultados}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{cccccccccc}
+\toprule
+$p$ & $\Gamma$ & $|\text{OPT}|$ & $\bar{r}_{\text{SLO}}$ &
+$\mu_{\text{rnd}}$ & $\sigma_{\text{rnd}}$ &
+$\min$ & $\max$ & $\hat{p}$ & $z$ \\
+\midrule
+$0{,}10$ & 3 & 181\,440 & $0{,}561$ & $0{,}944$ & $0{,}270$ &
+  $0{,}167$ & $1{,}689$ & $0{,}082$ & $1{,}42$ \\
+$0{,}25$ & 4 & 4\,158   & $0{,}000$ & $1{,}165$ & $0{,}700$ &
+  $0{,}000$ & $3{,}000$ & $0{,}094$ & $1{,}66$ \\
+$0{,}50$ & 6 & 325      & $0{,}000$ & $0{,}670$ & $0{,}408$ &
+  $0{,}000$ & $1{,}833$ & $0{,}092$ & $1{,}64$ \\
+$0{,}75$ & 7 & 4\,320   & $0{,}000$ & $0{,}513$ & $0{,}353$ &
+  $0{,}000$ & $1{,}571$ & $0{,}126$ & $1{,}45$ \\
+$0{,}90$ & 7 & 80\,640  & $0{,}000$ & $0{,}528$ & $0{,}297$ &
+  $0{,}000$ & $1{,}286$ & $0{,}060$ & $1{,}78$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Leitura dos resultados}
+
+\paragraph{Nenhum resultado individualmente significativo ao nível 5\%.}
+Todos os p-valores ficam entre $0{,}06$ e $0{,}13$, acima do limiar
+convencional de $0{,}05$. Isso não implica que a hipótese nula é
+verdadeira, mas que a evidência individual por grafo é insuficiente
+para rejeitá-la com $n=9$.
+
+\paragraph{O sinal é consistente e não aleatório.}
+Três observações apontam para um efeito real:
+\begin{itemize}
+  \item $\Delta > 0$ em todos os 5 casos: a SLO sempre produz rank
+    médio menor que a média do acaso.
+  \item Os z-scores estão entre $1{,}42$ e $1{,}78$ — consistentemente
+    próximos do limiar de significância.
+  \item $\bar{r}_{\text{SLO}} = 0$ em 4 de 5 casos: a SLO atinge
+    o melhor caso possível (representantes nas posições mais
+    prioritárias) com frequência muito maior do que o acaso.
+\end{itemize}
+
+\paragraph{O problema do piso zero.}
+Quando $\bar{r}_{\text{SLO}} = 0$, qualquer outra ordem que também
+atinja 0 contribui para o p-valor — e o histograma mostra que ordens
+aleatórias atingem 0 com probabilidade entre $6\%$ e $13\%$. A SLO
+não pode melhorar além de 0, então a separação estatística fica
+limitada pelo piso da distribuição, não pela qualidade da SLO.
+
+% ==================================================================
+\section{Combinação de testes: Método de Fisher}
+
+Quando múltiplos testes independentes produzem resultados individualmente
+não significativos mas consistentemente favoráveis, o
+\textbf{método de Fisher} combina os p-valores em um único teste global.
+
+\begin{definicao}{Estatística de Fisher}
+Dados $k$ testes independentes com p-valores $\hat{p}_1, \ldots,
+\hat{p}_k$, a estatística de Fisher é
+\[
+  \chi^2_F = -2\sum_{i=1}^{k} \ln(\hat{p}_i),
+\]
+que segue uma distribuição $\chi^2$ com $2k$ graus de liberdade sob
+$H_0$ (independência e uniformidade dos p-valores).
+\end{definicao}
+
+Aplicando aos cinco p-valores observados:
+\begin{align*}
+  \chi^2_F &= -2\bigl(\ln 0{,}082 + \ln 0{,}094 + \ln 0{,}092
+               + \ln 0{,}126 + \ln 0{,}060\bigr) \\
+           &= -2\bigl(-2{,}501 - 2{,}364 - 2{,}386
+               - 2{,}071 - 2{,}813\bigr) \\
+           &= -2 \times (-12{,}135) \;=\; 24{,}27.
+\end{align*}
+
+Com $2 \times 5 = 10$ graus de liberdade, a tabela $\chi^2$ fornece:
+\[
+  P(\chi^2_{10} > 24{,}27) \approx 0{,}007.
+\]
+
+\begin{resultado}
+O método de Fisher combina os cinco testes individuais e produz
+$\chi^2_F = 24{,}27$ com $p \approx 0{,}007$ ($< 0{,}01$). Isso
+indica que, \textbf{globalmente}, a evidência contra a hipótese nula
+é altamente significativa: a SLO posiciona os representantes de forma
+sistematicamente melhor que o acaso, mesmo que nenhum grafo individual
+produza evidência suficiente.
+\end{resultado}
+
+% ==================================================================
+\section{Implicações para a formulação de representantes}
+
+A validação estatística do alinhamento semântico tem consequências
+diretas para a qualidade do modelo de programação inteira.
+
+\subsection{Qualidade da relaxação LP}
+
+Se a SLO posiciona os representantes naturais com $\sigma$ pequeno,
+a variável $x_{u,u}$ correspondente é criada para os vértices que
+\emph{deveriam} ser representantes. A relaxação LP tende a atribuir
+$x_{u,u}$ fracionário próximo de 1 para esses vértices, pois as
+restrições M4 penalizam outros arranjos. Isso produz um limitante dual
+de melhor qualidade logo no nó raiz da árvore de branch-and-bound.
+
+Formalmente, quanto mais $\bar{r}(\sigma_{\text{SLO}})$ se aproxima
+de 0, mais a estrutura de $\mathcal{X}$ reflete a estrutura ótima do
+problema, e menor tende a ser o gap de integralidade na raiz:
+\[
+  \text{gap}_{\text{raiz}} \;=\;
+  \frac{\text{OBJ}_{\text{LP}} - \text{OBJ}_{\text{IP}}}
+       {\text{OBJ}_{\text{IP}}}.
+\]
+
+\subsection{Redução do espaço de busca}
+
+O número de nós explorados pelo solver depende do gap na raiz e da
+simetria residual do modelo. Uma ordem que coloca os representantes
+naturais mais cedo reduz a ambiguidade: há menos pares de vértices
+que poderiam trocar de papel (representante/membro) sem alterar a
+solução. Isso se traduz diretamente em menos branching necessário.
+
+\subsection{Coerência semântica}
+
+A SLO não é apenas uma heurística ad hoc: ela tem justificativa
+estrutural. Os vértices de maior grau residual (aqueles com $\sigma$
+pequeno na SLO) são os mais prováveis representantes porque:
+\begin{itemize}
+  \item Um representante $u$ da classe $i$ precisa ter pelo menos
+    um vizinho em cada classe $j < i$. Isso exige alto grau em $G$.
+  \item Na SLO, vértices de alto grau residual têm $\sigma$ pequeno
+    e portanto muitos não-vizinhos à frente na ordem — exatamente
+    os candidatos a membros de sua classe.
+\end{itemize}
+
+O teste de permutação confirma empiricamente essa coerência:
+$\bar{r}(\sigma_{\text{SLO}}) = 0$ em 4 de 5 grafos testados,
+e o método de Fisher confirma que esse resultado é globalmente
+significativo com $p < 0{,}01$.
+
+% ==================================================================
+\section{Limitações e extensões}
+
+\begin{atencao}
+As conclusões acima são baseadas em grafos pequenos ($n=9$) devido
+à necessidade de enumerar todas as soluções ótimas por força bruta.
+Para $n \geq 12$, seria necessário um algoritmo exato de
+branch-and-bound para computar $\text{OPT}(G)$, o que tornaria o
+estudo computacionalmente viável para instâncias maiores — onde o
+efeito da SLO provavelmente seria ainda mais pronunciado, pois o
+z-score cresce com $n$ à medida que o espaço de permutações aumenta
+fatorialmente.
+\end{atencao}
+
+Uma extensão natural seria usar a \textbf{correlação de Spearman}
+entre $\sigma(v)$ e a frequência com que $v$ atua como representante
+em $\text{OPT}(G)$, definida como
+\[
+  \rho_s = 1 - \frac{6\sum_v d_v^2}{n(n^2-1)},
+\]
+onde $d_v = \sigma(v) - \text{rank de frequência de }v$ como
+representante. Essa métrica é contínua e não sofre do problema do
+piso zero, potencialmente tornando o teste mais poderoso para $n$
+pequeno.
+
+\end{document}

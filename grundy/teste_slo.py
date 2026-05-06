@@ -23,6 +23,11 @@ from matplotlib.ticker import MaxNLocator
 import seaborn as sns
 from scipy.stats import pearsonr, spearmanr
 from scipy.stats import norm
+import networkx as nx
+from ortools.sat.python import cp_model
+from ortools.linear_solver import pywraplp
+from upper_bound import upper_bound1
+
 
 # ---------------------------------------------------------------------------
 # Paleta e estilo globais
@@ -79,128 +84,6 @@ def _rolling_corr(x_series, y_series, window=10):
             corrs.append(pearsonr(xw, yw)[0])
     return corrs
 
-
-# ---------------------------------------------------------------------------
-# Experimento com persistência
-# ---------------------------------------------------------------------------
-
-def run_experiment_v2(
-    heuristic_function,
-    num_graphs: int = 50,
-    n: int = 50,
-    p: float = 0.5,
-    k_perms: int = 200,
-    save_dir: str = "results",
-    experiment_tag: str = "",
-    # injete suas funções aqui:
-    solver_fn=None,
-    stair_factor_fn=None,
-    sample_permutations_fn=None,
-):
-    """
-    Versão estendida de run_experiment que persiste todos os dados brutos.
-
-    Parâmetros
-    ----------
-    heuristic_function : callable
-        Função que recebe um grafo e devolve uma ordem (lista de nós).
-    num_graphs : int
-        Número de grafos Erdős–Rényi amostrados.
-    n, p : int, float
-        Parâmetros do modelo G(n, p).
-    k_perms : int
-        Número de permutações aleatórias por grafo.
-    save_dir : str
-        Diretório onde os resultados serão salvos.
-    experiment_tag : str
-        Rótulo livre para identificar o experimento (nome da heurística, etc.).
-    solver_fn : callable
-        Referência para solver_carvalho_representante3.
-    stair_factor_fn : callable
-        Referência para stair_factor.
-    sample_permutations_fn : callable
-        Referência para sample_permutations.
-
-    Retorna
-    -------
-    dict com todos os dados brutos e estatísticas agregadas,
-    e salva em  <save_dir>/<tag>_<timestamp>.json
-    """
-    import networkx as nx
-
-    assert solver_fn is not None, "Passe solver_fn=solver_carvalho_representante3"
-    assert stair_factor_fn is not None, "Passe stair_factor_fn=stair_factor"
-    assert sample_permutations_fn is not None, "Passe sample_permutations_fn=sample_permutations"
-
-    pathlib.Path(save_dir).mkdir(parents=True, exist_ok=True)
-
-    records = []          # um registro por grafo
-    percentis_time = []
-    percentis_relaxation = []
-
-    for i in range(num_graphs):
-        G = nx.erdos_renyi_graph(n, p)
-        nodes = list(G.nodes())
-        sf = stair_factor_fn(G)
-
-        # --- heurística ---
-        r_h = solver_fn(G, heuristic_function(G), sf)
-        t_val = r_h["cpu_s"]
-        r_val = r_h["linear_relaxation"]
-
-        # --- baseline aleatório ---
-        rand_times, rand_relax = [], []
-        for perm in sample_permutations_fn(nodes, k_perms):
-            r = solver_fn(G, perm, sf)
-            rand_times.append(r["cpu_s"])
-            rand_relax.append(r["linear_relaxation"])
-
-        perc_t = percentile_lower_is_better(rand_times, t_val)
-        perc_r = percentile_higher_is_better(rand_relax, r_val)
-        percentis_time.append(perc_t)
-        percentis_relaxation.append(perc_r)
-
-        record = {
-            "graph_index":            i,
-            "n_nodes":                n,
-            "n_edges":                G.number_of_edges(),
-            "p":                      p,
-            "heuristic_time":         t_val,
-            "heuristic_relaxation":   r_val,
-            "random_times":           rand_times,
-            "random_relaxations":     rand_relax,
-            "percentile_time":        perc_t,
-            "percentile_relaxation":  perc_r,
-        }
-        records.append(record)
-        print(f"  iter {i:03d} | perc_time={perc_t:6.2f}%  perc_relax={perc_r:6.2f}%")
-
-    # --- resumo ---
-    summary = {
-        "experiment_tag":           experiment_tag or heuristic_function.__name__,
-        "timestamp":                datetime.now().isoformat(),
-        "params":                   {"num_graphs": num_graphs, "n": n, "p": p, "k_perms": k_perms},
-        "mean_percentile_time":     float(np.mean(percentis_time)),
-        "mean_percentile_relax":    float(np.mean(percentis_relaxation)),
-        "std_percentile_time":      float(np.std(percentis_time)),
-        "std_percentile_relax":     float(np.std(percentis_relaxation)),
-        "pearson_corr":             float(pearsonr(percentis_time, percentis_relaxation)[0]),
-        "spearman_corr":            float(spearmanr(percentis_time, percentis_relaxation)[0]),
-        "records":                  records,
-    }
-
-    tag = experiment_tag or heuristic_function.__name__
-    ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fname = pathlib.Path(save_dir) / f"{tag}_{ts}.json"
-    with open(fname, "w") as f:
-        json.dump(summary, f, indent=2)
-    print(f"\nResultados salvos em: {fname}")
-    print(f"Percentil tempo médio:      {summary['mean_percentile_time']:.2f}%")
-    print(f"Percentil relaxação médio:  {summary['mean_percentile_relax']:.2f}%")
-    print(f"Correlação Pearson:         {summary['pearson_corr']:.4f}")
-
-    return summary
-
 def get_linear_relaxation(solver):
     """
     Computes the LP relaxation value of a MIP model built with OR-Tools (pywraplp).
@@ -248,11 +131,6 @@ def get_linear_relaxation(solver):
     return lp_value
 
 from greedy_coloring import is_greedy_coloring
-import networkx as nx
-from ortools.sat.python import cp_model
-from ortools.linear_solver import pywraplp
-from upper_bound import upper_bound1
-
 
 def repr_formulation(
     grafo: nx.Graph,
@@ -382,8 +260,98 @@ def repr_formulation(
     }
 
 
+# ---------------------------------------------------------------------------
+# Experimento com persistência
+# ---------------------------------------------------------------------------
+
+def run_experiment_v2(
+    heuristic_function,
+    num_graphs: int = 50,
+    n: int = 50,
+    p: float = 0.5,
+    k_perms: int = 200,
+    save_dir: str = "results",
+    experiment_tag: str = "",
+    # injete suas funções aqui:
+    sample_permutations_fn=None,
+):
+    
+    import networkx as nx
+
+    assert sample_permutations_fn is not None, "Passe sample_permutations_fn=sample_permutations"
+
+    pathlib.Path(save_dir).mkdir(parents=True, exist_ok=True)
+
+    records = []          # um registro por grafo
+    percentis_time = []
+    percentis_relaxation = []
+
+    for i in range(num_graphs):
+        G = nx.erdos_renyi_graph(n, p)
+        nodes = list(G.nodes())
+        
+        # --- heurística ---
+        r_h = repr_formulation(G, heuristic_function(G))
+        t_val = r_h["cpu_s"]
+        r_val = r_h["linear_relaxation"]
+
+        # --- baseline aleatório ---
+        rand_times, rand_relax = [], []
+        for perm in sample_permutations_fn(nodes, k_perms):
+            r = repr_formulation(G, perm)
+            rand_times.append(r["cpu_s"])
+            rand_relax.append(r["linear_relaxation"])
+
+        perc_t = percentile_lower_is_better(rand_times, t_val)
+        perc_r = percentile_higher_is_better(rand_relax, r_val)
+        percentis_time.append(perc_t)
+        percentis_relaxation.append(perc_r)
+
+        record = {
+            "graph_index":            i,
+            "n_nodes":                n,
+            "n_edges":                G.number_of_edges(),
+            "p":                      p,
+            "stair_factor":           sf,
+            "heuristic_time":         t_val,
+            "heuristic_relaxation":   r_val,
+            "random_times":           rand_times,
+            "random_relaxations":     rand_relax,
+            "percentile_time":        perc_t,
+            "percentile_relaxation":  perc_r,
+        }
+        records.append(record)
+        print(f"  iter {i:03d} | perc_time={perc_t:6.2f}%  perc_relax={perc_r:6.2f}%")
+
+    # --- resumo ---
+    summary = {
+        "experiment_tag":           experiment_tag or heuristic_function.__name__,
+        "timestamp":                datetime.now().isoformat(),
+        "params":                   {"num_graphs": num_graphs, "n": n, "p": p, "k_perms": k_perms},
+        "mean_percentile_time":     float(np.mean(percentis_time)),
+        "mean_percentile_relax":    float(np.mean(percentis_relaxation)),
+        "std_percentile_time":      float(np.std(percentis_time)),
+        "std_percentile_relax":     float(np.std(percentis_relaxation)),
+        "pearson_corr":             float(pearsonr(percentis_time, percentis_relaxation)[0]),
+        "spearman_corr":            float(spearmanr(percentis_time, percentis_relaxation)[0]),
+        "records":                  records,
+    }
+
+    tag = experiment_tag or heuristic_function.__name__
+    ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fname = pathlib.Path(save_dir) / f"{tag}_{ts}.json"
+    with open(fname, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"\nResultados salvos em: {fname}")
+    print(f"Percentil tempo médio:      {summary['mean_percentile_time']:.2f}%")
+    print(f"Percentil relaxação médio:  {summary['mean_percentile_relax']:.2f}%")
+    print(f"Correlação Pearson:         {summary['pearson_corr']:.4f}")
+
+    return summary
+
+
 def run_experiment_v3(
-        heuristic
+    heuristic_function,
     num_graphs: int = 50,
     n: int = 50,
     p: float = 0.5,
@@ -396,6 +364,9 @@ def run_experiment_v3(
 ):
     import networkx as nx
 
+    assert solver_fn is not None
+    assert stair_factor_fn is not None
+    assert sample_permutations_fn is not None
 
     pathlib.Path(save_dir).mkdir(parents=True, exist_ok=True)
 
@@ -409,10 +380,10 @@ def run_experiment_v3(
     for i in range(num_graphs):
         G     = nx.erdos_renyi_graph(n, p)
         nodes = list(G.nodes())
-        U    = upper_bound1(G)
+        sf    = stair_factor_fn(G)
 
         # --- heurística ---
-        r_h   = solver_fn(G, heuristic_function(G))
+        r_h   = solver_fn(G, heuristic_function(G), sf)
         t_val = r_h["cpu_s"]
         r_val = r_h["linear_relaxation"]
         h_nodes  = r_h.get("nodes_explored", None)
@@ -1128,69 +1099,6 @@ def plot_focused(filepath: str, save_dir: str = "plots", show: bool = True):
     return {"plot_A": fname_t, "plot_B": fname_r, "plot_C": fname_c}
 
 
-# ---------------------------------------------------------------------------
-# Uso rápido para teste com dados mockados
-# ---------------------------------------------------------------------------
-
-def _demo_with_mock_data():
-    """Executa as visualizações com dados sintéticos (sem solver)."""
-    rng = np.random.default_rng(42)
-    n_graphs = 50
-    k_perms  = 200
-
-    records = []
-    for i in range(n_graphs):
-        rand_times = rng.exponential(scale=2.0, size=k_perms).tolist()
-        heur_time  = rng.exponential(scale=0.15)                # muito mais rápido
-        rand_relax = rng.normal(loc=8.0, scale=1.5, size=k_perms).tolist()
-        heur_relax = rng.normal(loc=8.0, scale=1.5)             # sem diferença
-
-        perc_t = percentile_lower_is_better(rand_times, heur_time)
-        perc_r = percentile_higher_is_better(rand_relax, heur_relax)
-
-        records.append({
-            "graph_index":           i,
-            "n_nodes":               50,
-            "n_edges":               int(rng.integers(200, 400)),
-            "p":                     0.5,
-            "stair_factor":          10,
-            "heuristic_time":        float(heur_time),
-            "heuristic_relaxation":  float(heur_relax),
-            "random_times":          rand_times,
-            "random_relaxations":    rand_relax,
-            "percentile_time":       perc_t,
-            "percentile_relaxation": perc_r,
-        })
-
-    perc_t_all = [r["percentile_time"]       for r in records]
-    perc_r_all = [r["percentile_relaxation"] for r in records]
-
-    summary = {
-        "experiment_tag":        "DEMO_mock",
-        "timestamp":             datetime.now().isoformat(),
-        "params":                {"num_graphs": n_graphs, "n": 50, "p": 0.5, "k_perms": k_perms},
-        "mean_percentile_time":  float(np.mean(perc_t_all)),
-        "mean_percentile_relax": float(np.mean(perc_r_all)),
-        "std_percentile_time":   float(np.std(perc_t_all)),
-        "std_percentile_relax":  float(np.std(perc_r_all)),
-        "pearson_corr":          float(pearsonr(perc_t_all, perc_r_all)[0]),
-        "spearman_corr":         float(spearmanr(perc_t_all, perc_r_all)[0]),
-        "records":               records,
-    }
-
-    pathlib.Path("results").mkdir(exist_ok=True)
-    with open("results/demo_mock.json", "w") as f:
-        json.dump(summary, f, indent=2)
-
-    print("=== DEMO com dados mockados ===")
-    print(f"Percentil tempo médio:  {summary['mean_percentile_time']:.2f}%")
-    print(f"Percentil relax médio:  {summary['mean_percentile_relax']:.2f}%")
-    print(f"Correlação Pearson:     {summary['pearson_corr']:.4f}")
-    print()
-
-    plot_all_visualizations(summary, save_dir="plots", show=False)
-    plot_focused("results/demo_mock.json", save_dir="plots", show=True)
-
 
 if __name__ == "__main__":
-    _demo_with_mock_data()
+    

@@ -559,10 +559,10 @@ def bb_bitmask4(
     start = time.time()
     deadline = start + time_limit
 
-
+    change = False
 
     def solve(S: int) -> int:
-        nonlocal bb_nodes, LB, bestC, pruned, deadline
+        nonlocal bb_nodes, LB, bestC, pruned, deadline, change
 
         if time.time () > deadline:
             return 0
@@ -571,6 +571,7 @@ def bb_bitmask4(
         if S == 0:
             if len(C) > LB:
                 #print(C)
+                change = True
                 LB    = len(C)
                 bestC = C.copy()
             return len(C)
@@ -621,11 +622,14 @@ def bb_bitmask4(
     #info  = solve.cache_info()
     #total = info.hits + info.misses
 
-    coloring = []
-    for R in bestC:
-        color = [ nodes[i] for i in range(n) if R & (1 << i)]
-        coloring.append(color)
-
+    if change:
+        coloring = []
+        for R in bestC:
+            color = [ nodes[i] for i in range(n) if R & (1 << i)]
+            coloring.append(color)
+    else:
+        coloring = bestC
+        
     return {
         "model":        "BITBB",
         "gamma":        LB,
@@ -641,6 +645,151 @@ def bb_bitmask4(
     }
 
 
+def dp_grundy(
+    G: nx.Graph,
+    maxsize : int = None,
+    time_limit : int = math.inf   
+):
+    
+    nodes = sorted(G.nodes())
+    n     = len(nodes)
+
+    adj, non_adj = create_bit_graph(G)
+    
+    C = []
+    FULL = (1 << n) - 1  # bitmask com todos os n vértices ativos
+    bb_nodes = 0
+    pruned = 0
+
+    choice = {}
+    
+    @functools.lru_cache(maxsize=maxsize)
+    def solve(S: int) -> int:
+        nonlocal pruned, bb_nodes
+        if S == 0:
+            return 0
+        else:
+            bb_nodes += 1
+            max_val = 0
+            for R in expand2(non_adj, 0, S, 0):
+                C.append(R)
+                S_next = S & ~R
+
+                val = 1 + solve(S_next)
+                if val > max_val:
+                    max_val = val
+                    choice[S] = R
+                C.pop()
+            return max_val
+
+    
+
+    tracemalloc.start()
+    start = time.time()
+
+    LB = solve(FULL)
+    end   = time.time()
+    current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    info  = solve.cache_info()
+    total = info.hits + info.misses
+
+    S = FULL
+    coloring = []
+        
+    while S != 0:
+        R = choice[S]
+        color = [ nodes[i] for i in range(n) if R & (1 << i)]
+        coloring.append(color)
+        S = S & ~R
+        
+
+    return {
+        "model":        "DPBIT",
+        "gamma":        LB,
+        "cpu_s":        end - start,
+        "classes":      coloring,
+        "valid":        is_greedy_coloring(G, coloring),
+        "bb_nodes":     bb_nodes,
+        "pruned":       pruned,
+        "hits":         info.hits,
+        "misses":       info.misses,
+        "hit_rate":     info.hits / total if total > 0 else 0,
+        "memoria_pico": peak,
+    }
+
+
+def dp_grundy2(
+    G: nx.Graph,
+    maxsize : int = None,
+    time_limit : int = math.inf   
+):
+    
+    nodes = sorted(G.nodes())
+    n     = len(nodes)
+
+    adj, non_adj = create_bit_graph(G)
+    
+    C = []
+    FULL = (1 << n) - 1  # bitmask com todos os n vértices ativos
+    bb_nodes = 0
+    pruned = 0
+
+    choice = {}
+    table  = {}
+    
+    def solve(S: int) -> int:
+        nonlocal pruned, bb_nodes
+        if S == 0:
+            return 0
+        elif S in table:
+            return table[S] 
+        else:
+            bb_nodes += 1
+            max_val = 0
+            for R in expand2(non_adj, 0, S, 0):
+                C.append(R)
+                S_next = S & ~R
+
+                val = 1 + solve(S_next)
+                if val > max_val:
+                    max_val = val
+                    choice[S] = R
+                C.pop()
+            table[S] = max_val
+            return max_val
+
+    
+
+    tracemalloc.start()
+    start = time.time()
+
+    LB = solve(FULL)
+    end   = time.time()
+    current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+
+    S = FULL
+    coloring = []
+        
+    while S != 0:
+        R = choice[S]
+        color = [ nodes[i] for i in range(n) if R & (1 << i)]
+        coloring.append(color)
+        S = S & ~R
+        
+
+    return {
+        "model":        "DPBIT",
+        "gamma":        LB,
+        "cpu_s":        end - start,
+        "classes":      coloring,
+        "valid":        is_greedy_coloring(G, coloring),
+        "bb_nodes":     bb_nodes,
+        "pruned":       pruned,
+    }
 
 
 from upper_bound import stair_factor, delta_2
@@ -648,19 +797,63 @@ from bb import branch_and_bound
 
 if __name__ == "__main__":
 
-    G = nx.erdos_renyi_graph(20, 0.5, 1)
+    G = nx.erdos_renyi_graph(20, 0.5, 42)
+
+    #adj, non_adj = create_bit_graph(G)
+
     
-    print( branch_and_bound(G))
-    print( bb_bitmask1(G))
-    print( bb_bitmask2(G))
-    print( bb_bitmask3(G))
-    print( bb_bitmask4(G))
+    #for S in expand(0, )
+
+    r = bb_bitmask1(G)
+    print(r)
+
+    r = bb_bitmask2(G)
+    print(r)
+
+    r = bb_bitmask3(G)
+    print(r)
+
+    r = bb_bitmask4(G)
+    print(r)
+
+
+
+    # for i in range(10):
+    #     G = nx.erdos_renyi_graph(25, 0.5, i)
+    #     r1 = bb_bitmask4(G) # versao com bitmap e todos os cortes
+    #     r2 = dp_grundy(G) 
+    #     r3 = dp_grundy2(G) 
+
+    #     print(r1)
+    #     print(r2)
+    #     print(r3)
+    #     print()
+
+        
+    #     if r1["gamma"] != r2["gamma"]:
+    #         print(r1)
+    #         print(r2)
+        
+    #         print("dp grundy 1 errada")
+    #         break 
+    #     if r1["gamma"] != r3["gamma"]:
+    #         print(r1)
+    #         print(r3)
+        
+    #         print("dp grundy 2 errada")
+    #         break
+        
+
+    # print( branch_and_bound(G)) # versao sem bitmap
+    # print( bb_bitmask1(G))
+    # print( bb_bitmask2(G))
+    # print( bb_bitmask3(G))
     
     
-    print( branch_and_bound(G, 20))
-    print( bb_bitmask1(G, 20))
-    print( bb_bitmask2(G, 20))
-    print( bb_bitmask3(G, 20))
-    print( bb_bitmask4(G, 20))
+    # print( branch_and_bound(G, 20)) # versao sem bitmap com tempo limite 20s
+    # print( bb_bitmask1(G, 20))
+    # print( bb_bitmask2(G, 20))
+    # print( bb_bitmask3(G, 20))
+    # print( bb_bitmask4(G, 20)) # versao com bitmap e todos os cortes com tempo limite
     
 
